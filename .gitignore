@@ -1,0 +1,12 @@
+node_modules/
+.npm-cache/
+tools/pandoc/
+output/
+*.log
+.env
+.env.*
+!.env.example
+.playwright-cli/
+private/
+asset-urls*.json
+docs/network-evidence.json

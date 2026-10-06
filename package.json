@@ -1,0 +1,22 @@
+{
+  "name": "docx-to-campus-html",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "本地 Word 转 HTML 工具，面向华中农业大学大创申报系统。",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "setup:pandoc": "node tools/setup-pandoc.mjs",
+    "start": "node src/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "demo": "node tools/demo.mjs"
+  },
+  "overrides": { "@xmldom/xmldom": "0.9.12" },
+  "dependencies": {
+    "cheerio": "1.0.0",
+    "jszip": "3.10.1",
+    "mathjax-full": "3.2.2",
+    "sharp": "0.34.5"
+  }
+}
