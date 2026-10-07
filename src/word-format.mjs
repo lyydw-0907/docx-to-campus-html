@@ -144,7 +144,7 @@ function addStylesRelationship(zip, documentRelationships, contentTypes) {
 }
 
 /** Annotate a disposable DOCX copy. Original document bytes and math nodes are untouched. */
-export async function prepareWordFormatting(input, { fontMode = 'uniform', fontSize = 16 } = {}) {
+export async function prepareWordFormatting(input, { fontMode = 'uniform', fontSize = 16, binaryType = 'nodebuffer' } = {}) {
   if (!['word', 'uniform'].includes(fontMode)) throw new Error('字号模式应为 word 或 uniform。');
   if (!Number.isFinite(fontSize) || fontSize < 8 || fontSize > 48) throw new Error('回退字号应在 8–48 px 之间。');
   const zip = await JSZip.loadAsync(input);
@@ -264,7 +264,7 @@ export async function prepareWordFormatting(input, { fontMode = 'uniform', fontS
   }
   zip.file('word/styles.xml', $styles.xml());
   if (!originalStyles) addStylesRelationship(zip, await zip.file('word/_rels/document.xml.rels')?.async('string'), await zip.file('[Content_Types].xml')?.async('string'));
-  return { input: await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }), paragraphFormats, runFormats, tableFormats, fontMode, fontSize, warnings: [...warnings], summary };
+  return { input: await zip.generateAsync({ type: binaryType, compression: 'DEFLATE' }), paragraphFormats, runFormats, tableFormats, fontMode, fontSize, warnings: [...warnings], summary };
 }
 
 /** Restore safe formatting by temporary identity, never by paragraph text. */

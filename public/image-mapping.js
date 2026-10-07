@@ -21,7 +21,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
     const selected = getCopyState();
     const busy = mappingRequest?.current === getCurrent() && Boolean(getCurrent());
     const button = byId('copy-mapped');
-    const field = ['field', 'unassigned'].includes(selected?.kind) ? `“${selected.title}”` : '';
+    const field = ['field', 'unassigned'].includes(selected?.kind) ? `“${selected.displayTitle ?? selected.title}”` : '';
     const whole = selected?.kind === 'whole';
     const target = whole ? '整篇 HTML' : `${field}正文`;
     button.disabled = !selected?.eligible || selected.needsMapping && (!addressesValid() || Boolean(unconfirmed) || busy);

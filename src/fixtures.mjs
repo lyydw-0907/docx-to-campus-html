@@ -71,3 +71,22 @@ export async function makeDemoDocx() {
   zip.file('word/media/demo.png', demoPng());
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 }
+
+/** A synthetic progress report with two school fields; no user material is read. */
+export async function makeProgressDemoDocx() {
+  const zip = await JSZip.loadAsync(await makeDemoDocx());
+  const source = await zip.file('word/document.xml').async('string');
+  const nextFormula = `<m:oMath>${mathRun('y=')}<m:sSup><m:e>${mathRun('x')}</m:e><m:sup>${mathRun('2')}</m:sup></m:sSup></m:oMath>`;
+  const nextPlan = [
+    paragraph(run('项目后期具体工作计划'), '<w:pStyle w:val="Heading1"/>'),
+    paragraph(run('下一阶段先核对模型结果，再开展数值模拟与敏感性分析。', '<w:b/>') + run('本示例仅用于测试栏目复制。'), '<w:ind w:firstLineChars="200"/>'),
+    paragraph(run('合成公式：') + nextFormula + run('。这一栏没有普通图片，可直接复制。'))
+  ].join('');
+  const report = source.replace('大创申报转换示例', '项目进展检查')
+    .replace('<w:p><w:r><w:t xml:space="preserve">这是一份合成测试文档', '<w:p><w:pPr><w:ind w:firstLineChars="200"/></w:pPr><w:r><w:t xml:space="preserve">这是一份合成测试文档')
+    .replace('<w:p><w:r><w:drawing>', '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:drawing>')
+    .replace('<w:p><w:r><w:t xml:space="preserve">图 1', '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t xml:space="preserve">图 1')
+    .replace('<w:sectPr>', `${nextPlan}<w:sectPr>`);
+  zip.file('word/document.xml', report);
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+}

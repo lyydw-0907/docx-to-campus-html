@@ -1,4 +1,8 @@
 /** Selection and mapped-copy state, independent of browser rendering. */
+export function sectionDisplayTitle(section) {
+  return section?.id === 'progress-check' ? '项目进展检查' : section?.title ?? '';
+}
+
 export function createSectionView() {
   let current;
   let mapped;

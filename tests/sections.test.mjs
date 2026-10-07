@@ -10,8 +10,8 @@ const fieldHeadings = [
 const expectedIds = ['research-purpose', 'research-status', 'research-content', 'innovation', 'technical-route', 'schedule', 'conditions', 'expected-results'];
 
 function parse(fragment) { return load(fragment, {}, false); }
-function assertNoSplit(fragment) {
-  const result = splitCampusSections(fragment);
+function assertNoSplit(fragment, options) {
+  const result = splitCampusSections(fragment, options);
   assert.deepEqual(result.sections, []);
   assert.ok(result.warnings.length, 'an uncertain split must explain why the whole document is retained');
 }
@@ -155,4 +155,90 @@ test('punctuation and whitespace normalization does not alter headings that are 
   const { sections } = splitCampusSections('<h2> 研 究 目 的 ： </h2><p>甲</p><h2>国，内 外研究现状和发展动态：</h2><p>乙</p><h2>已具备的条件, 尚缺少的条件及解决方法:</h2><h3>已具备的条件</h3><p>丙</p>');
   assert.deepEqual(sections.map(section => section.id), ['research-purpose', 'research-status', 'conditions']);
   assert.equal(parse(sections[2].fragment)('h3').text(), '已具备的条件');
+});
+
+const progressTitle = '项目进展检查（项目执行的进展情况，取得了哪些成绩，是否达到预期效果，以及在项目的开展过程中还存在哪些问题）';
+
+test('progress form removes only its two confirmed field labels and preserves mathematics, media and paragraph formatting', () => {
+  const body = '<h3>已完成工作</h3><p style="text-indent:2em"><strong>研究已完成</strong><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mi>a</mi><mi>b</mi></mfrac></math></p><p style="text-align:center"><img src="assets/progress.png" width="160" height="60"></p><p style="text-align:center">图 1 合成进展示意图</p>';
+  const plan = '<h3>下一阶段安排</h3><p>继续进行数值分析。</p><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><msup><mi>x</mi><mn>2</mn></msup></math>';
+  const fragment = `<div style="font-size:14px"><h2>${progressTitle}：</h2>${body}<h2>项目后期具体工作计划:</h2>${plan}</div>`;
+  const { sections, warnings } = splitCampusSections(fragment, { documentType: 'progress', assets: [{ filename: 'progress.png', src: 'assets/progress.png', kind: 'image' }] });
+  assert.deepEqual(sections.map(section => section.id), ['progress-check', 'later-work-plan']);
+  assert.deepEqual(sections.map(section => section.kind), ['field', 'field']);
+  assert.deepEqual(sections.map(section => section.title), [progressTitle, '项目后期具体工作计划']);
+  assert.equal(warnings.length, 0);
+  const first = parse(sections[0].fragment);
+  const second = parse(sections[1].fragment);
+  const original = parse(body);
+  assert.equal(first('h2').length, 0);
+  assert.equal(second('h2').length, 0);
+  assert.equal(first('h3').text(), '已完成工作');
+  assert.equal(second('h3').text(), '下一阶段安排');
+  assert.deepEqual(first('h3,p,math,img').map((_, element) => first.html(element)).get(), original('h3,p,math,img').map((_, element) => original.html(element)).get());
+  assert.deepEqual(sections[0].assetFilenames, ['progress.png']);
+  assert.deepEqual(sections.map(section => section.formulaCount), [1, 1]);
+  assert.deepEqual(sections.map(section => section.imageCount), [1, 0]);
+});
+
+test('progress heading parentheses, commas, whitespace and terminal colons match both school punctuation styles', () => {
+  const ascii = '项 目 进展检查(项目执行的进展情况,取得了哪些成绩,是否达到预期效果,以及在项目的开展过程中还存在哪些问题):';
+  const result = splitCampusSections(`<h2>${ascii}</h2><p>甲</p><h2>项目后期具体工作计划 ：</h2><p>乙</p>`, { documentType: 'progress' });
+  assert.deepEqual(result.sections.map(section => section.id), ['progress-check', 'later-work-plan']);
+  assert.equal(result.sections[0].sourceHeading, ascii);
+  assert.equal(result.sections[0].title, progressTitle);
+  const alias = splitCampusSections('<h2>项目进展检查:</h2><p>甲</p><h2>项目后期具体工作计划</h2><p>乙</p>', { documentType: 'progress' });
+  assert.deepEqual(alias.sections.map(section => section.id), ['progress-check', 'later-work-plan']);
+  assert.equal(alias.sections[0].sourceHeading, '项目进展检查:');
+});
+
+test('progress bodies retain application headings without treating them as separate school fields', () => {
+  const { sections } = splitCampusSections('<h2>项目进展检查</h2><h2>研究内容</h2><p>本阶段内容</p><h3>研究目的</h3><p>内部目的</p><h2>创新点与项目特色</h2><p>已取得的特色成果</p><h2>项目后期具体工作计划</h2><h3>预期成果</h3><p>下一阶段成果</p>', { documentType: 'progress' });
+  assert.deepEqual(sections.map(section => section.id), ['progress-check', 'later-work-plan']);
+  const first = parse(sections[0].fragment);
+  assert.deepEqual(first('h2').map((_, node) => first(node).text()).get(), ['研究内容', '创新点与项目特色']);
+  assert.equal(first('h3').text(), '研究目的');
+  assert.equal(parse(sections[1].fragment)('h3').text(), '预期成果');
+});
+
+test('unknown same-level progress headings remain unassigned with their complete contents', () => {
+  const result = splitCampusSections('<div><p>封面文字</p><h2>项目进展检查</h2><p>进展正文</p><h2>附件说明</h2><p>待分配正文</p><math><mi>z</mi></math><h2>项目后期具体工作计划</h2><p>计划正文</p><h2>参考文献</h2><ol><li>合成文献</li></ol></div>', { documentType: 'progress' });
+  assert.deepEqual(result.sections.map(section => section.kind), ['unassigned', 'field', 'unassigned', 'field', 'unassigned']);
+  assert.equal(parse(result.sections[1].fragment)('p').text(), '进展正文');
+  assert.equal(parse(result.sections[2].fragment)('h2').text(), '附件说明');
+  assert.equal(parse(result.sections[2].fragment)('math').text(), 'z');
+  assert.equal(parse(result.sections[4].fragment)('li').text(), '合成文献');
+  assert.equal(result.warnings.length, 3);
+});
+
+test('application and progress form recognition is explicitly isolated and the application default keeps all eight fields', () => {
+  const application = fieldHeadings.map((heading, index) => `<h2>${heading}</h2><p>申请第 ${index + 1} 栏</p>`).join('');
+  const defaultResult = splitCampusSections(application);
+  const explicit = splitCampusSections(application, { documentType: 'application' });
+  assert.deepEqual(defaultResult, explicit);
+  assert.deepEqual(defaultResult.sections.map(section => section.id), expectedIds);
+  assertNoSplit(application, { documentType: 'progress' });
+  const progress = '<h2>项目进展检查</h2><p>进展正文</p><h2>项目后期具体工作计划</h2><p>计划正文</p>';
+  assertNoSplit(progress);
+  assertNoSplit(progress, { documentType: 'application' });
+  assert.deepEqual(splitCampusSections(`${application}${progress}`).sections.slice(-2).map(section => section.kind), ['unassigned', 'unassigned']);
+});
+
+test('uncertain progress boundaries return no partial sections so the caller can keep the whole document intact', () => {
+  const options = { documentType: 'progress' };
+  const fragments = [
+    `<h2>${progressTitle}</h2><p>甲</p><h2>项目进展检查</h2><p>乙</p><h2>项目后期具体工作计划</h2><p>丙</p>`,
+    '<div><h2>项目进展检查</h2><p>甲</p><h2>项目后期具体工作计划</h2><p>乙</p></div><div><h2>项目进展检查</h2><p>丙</p><h2>项目后期具体工作计划</h2><p>丁</p></div>',
+    '<h2>项目进展检查</h2><p>甲</p><h3>项目后期具体工作计划</h3><p>乙</p>',
+    '<h2>项目进展检查</h2><p>只有一栏</p>',
+    '<h2>1. 项目进展检查</h2><p>甲</p><h2>2. 项目后期具体工作计划</h2><p>乙</p>',
+    '<p>正文提到项目进展检查和项目后期具体工作计划。</p>'
+  ];
+  for (const fragment of fragments) assertNoSplit(fragment, options);
+});
+
+test('unsupported school form types are rejected rather than silently using application boundaries', () => {
+  for (const documentType of ['report', '', false, 1, {}, null]) {
+    assert.throws(() => splitCampusSections('<h2>研究目的</h2><h2>研究内容</h2>', { documentType }), /学校表单/);
+  }
 });

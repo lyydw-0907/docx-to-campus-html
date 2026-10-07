@@ -13,3 +13,4 @@ jobs:
       - run: npm run setup:pandoc
       - run: npm test
       - run: npm run demo
+      - run: npm run build:cloudflare

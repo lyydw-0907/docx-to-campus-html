@@ -1,17 +1,19 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Word 转申报 HTML</title><link rel="stylesheet" href="/style.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="campus-visit-counter" content=""><title>Word 转申报 HTML</title><link rel="stylesheet" href="/style.css"></head>
 <body>
 <header><a class="brand" href="/">Word → HTML</a><span class="local">本机处理 · 无需学校账号</span></header>
 <main>
   <div class="intro"><p class="eyebrow">华中农业大学大创申报辅助工具 / 原型 0.1</p><h1>把 Word 内容带进大创系统</h1><p>正文、表格和原生公式一起转换，保留原文缩进、对齐、字号和表格尺寸。数据表使用三线表或原有分组横线，图片排版表格无边框；公式可保留数学结构或生成高清图片，并保留已有编号。</p></div>
   <section class="controls" aria-label="转换设置">
     <label class="file-label" id="file-drop">Word 文件<input id="file" type="file" accept=".docx" aria-label="Word 文件" aria-describedby="file-name"><span id="file-name" aria-live="polite">支持 .docx，最大 20 MB；也可拖入文件</span></label>
+    <label>学校表单<select id="document-type" aria-describedby="document-type-help"><option value="application" selected>申报书</option><option value="progress">项目进展检查</option></select></label>
     <label>公式输出<select id="formula-format"><option value="mathml" selected>原生公式（MathML）</option><option value="png">高清图片（PNG）</option></select></label>
     <label>正文与公式字号<select id="font-size"><option value="word" selected>按 Word 原文字号</option><option value="14">统一 14 px</option><option value="16">统一 16 px（约 12 pt）</option><option value="18">统一 18 px</option><option value="20">统一 20 px</option></select></label>
     <label>图片清晰度<select id="scale" disabled title="仅用于 PNG 公式；原生公式不需要清晰度倍数"><option value="2">2 倍</option><option value="3" selected>3 倍</option><option value="4">4 倍</option></select></label>
     <button id="convert" class="primary">转换文件</button><button id="demo" class="quiet">试用示例</button>
   </section>
+  <p id="document-type-help" class="form-help">选择学校表单后转换，按 Word 的栏目标题分栏预览和复制。</p>
   <div id="status" role="status" aria-live="polite">选择文件或试用示例。原生公式样例已通过华中农大“进展检查”暂存回读；你的文档仍需检查。普通图片须上传后替换地址。</div>
   <section id="section-controls" class="panel section-controls" hidden>
     <label>复制范围<select id="section-select" aria-describedby="section-note"></select></label>
@@ -43,6 +45,7 @@
     <div class="mapped-actions"><button id="copy-mapped" class="primary" disabled>复制到学校编辑器</button><button id="download-mapped" disabled>下载已替换图片地址的 HTML</button></div>
   </section>
   <section class="panel compatibility"><div class="panel-top"><h2>检查保存并重新打开后的效果</h2><button id="probe">生成测试片段</button></div><p>在可删除的测试草稿中粘贴测试片段，保存后离开页面，再重新打开。将两份 HTML 源码放到下面比较，并检查页面图片、字号和对齐。</p><div class="compare-inputs"><label>保存前的 HTML<textarea id="before" spellcheck="false" placeholder="生成测试片段，或粘贴保存前的源码"></textarea></label><label>重新打开后的 HTML<textarea id="after" spellcheck="false" placeholder="从学校编辑器的源码模式复制"></textarea></label></div><button id="compare">比较两份源码</button><div id="comparison" aria-live="polite"></div></section>
-  <footer>原生公式的合成样例已通过学校暂存回读；其他公式和正式提交效果未验证。此工具不会登录学校系统或提交申报材料。<a href="/api/demo-docx" download="demo.docx">下载示例 Word</a></footer>
+  <p id="site-visits" class="site-visits" hidden aria-live="polite"></p>
+  <footer>原生公式的合成样例已通过学校暂存回读；其他公式和正式提交效果未验证。此工具不会登录学校系统或提交申报材料。<a href="/api/demo-docx" download="demo.docx">下载申报书示例 Word</a> · <a href="/api/demo-docx?documentType=progress" download="progress-demo.docx">下载进展检查示例 Word</a></footer>
 </main><script type="module" src="/app.js"></script>
 </body></html>

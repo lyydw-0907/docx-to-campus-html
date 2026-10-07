@@ -1,6 +1,6 @@
 import { load } from 'cheerio';
 
-const FIELDS = [
+const APPLICATION_FIELDS = [
   { id: 'research-purpose', title: '研究目的' },
   { id: 'research-status', title: '国内外研究现状和发展动态' },
   { id: 'research-content', title: '研究内容' },
@@ -9,6 +9,10 @@ const FIELDS = [
   { id: 'schedule', title: '项目研究进度安排' },
   { id: 'conditions', title: '已具备的条件，尚缺少的条件及解决方法', aliases: ['已有基础'] },
   { id: 'expected-results', title: '预期成果' }
+];
+const PROGRESS_FIELDS = [
+  { id: 'progress-check', title: '项目进展检查（项目执行的进展情况，取得了哪些成绩，是否达到预期效果，以及在项目的开展过程中还存在哪些问题）', aliases: ['项目进展检查'] },
+  { id: 'later-work-plan', title: '项目后期具体工作计划' }
 ];
 const HEADING = /^h([1-6])$/;
 const CONTAINERS = new Set(['div', 'section', 'article', 'main', 'body', 'td', 'th']);
@@ -22,10 +26,20 @@ const INHERITED_STYLES = new Set([
 ]);
 
 function normalizedHeading(value) {
-  return String(value).trim().replace(/[:：]+$/, '').replace(/[\s\u200b\u200c\u200d\ufeff,，、]/g, '');
+  return String(value).trim().replace(/[:：]+$/, '').replace(/[（）]/g, character => character === '（' ? '(' : ')').replace(/[\s\u200b\u200c\u200d\ufeff,，、]/g, '');
 }
 
-const FIELD_BY_HEADING = new Map(FIELDS.flatMap(field => [field.title, ...(field.aliases ?? [])].map(title => [normalizedHeading(title), field])));
+function headingMap(fields) {
+  return new Map(fields.flatMap(field => [field.title, ...(field.aliases ?? [])].map(title => [normalizedHeading(title), field])));
+}
+
+const APPLICATION_BY_HEADING = headingMap(APPLICATION_FIELDS);
+const PROGRESS_BY_HEADING = headingMap(PROGRESS_FIELDS);
+
+export function validateDocumentType(value = 'application') {
+  if (!['application', 'progress'].includes(value)) throw new Error('学校表单应为 application（申报书）或 progress（进展检查）。');
+  return value;
+}
 
 function headingLevel(element) {
   return Number(HEADING.exec(element.name ?? '')?.[1]) || 0;
@@ -95,13 +109,18 @@ function resourceCounts(fragment, assetsBySource) {
  * The whole-document fragment is never mutated; unsupported layouts return no
  * partial sections. The caller keeps that whole-document export available.
  */
-export function splitCampusSections(fragment, { assets = [] } = {}) {
+export function splitCampusSections(fragment, { assets = [], documentType = 'application' } = {}) {
+  validateDocumentType(documentType);
+  const fieldByHeading = documentType === 'progress' ? PROGRESS_BY_HEADING : APPLICATION_BY_HEADING;
   const $ = load(String(fragment ?? ''), {}, false);
+  // Reports often retain the application's research subsections. They belong
+  // inside the progress field rather than creating application-form boundaries.
+  const internalApplicationHeading = heading => documentType === 'progress' && APPLICATION_BY_HEADING.has(normalizedHeading($(heading).text()));
   const warnings = [];
   const fail = reason => ({ sections: [], warnings: [reason] });
   const groups = new Map();
   $('h1,h2,h3,h4,h5,h6').each((_, heading) => {
-    const field = FIELD_BY_HEADING.get(normalizedHeading($(heading).text()));
+    const field = fieldByHeading.get(normalizedHeading($(heading).text()));
     if (!field || !eligibleContainer($, heading.parent)) return;
     let levels = groups.get(heading.parent);
     if (!levels) groups.set(heading.parent, levels = new Map());
@@ -133,8 +152,9 @@ export function splitCampusSections(fragment, { assets = [] } = {}) {
     const element = nodes[index];
     const level = headingLevel(element);
     if (!level) continue;
+    if (internalApplicationHeading(element)) continue;
     const normalized = normalizedHeading($(element).text());
-    const field = FIELD_BY_HEADING.get(normalized);
+    const field = fieldByHeading.get(normalized);
     if (level === candidate.level) {
       const name = field?.id ?? normalized;
       if (!name || boundaryNames.has(name)) return fail('栏目边界包含空标题或重复标题，无法确定正文归属。已保留整篇转换结果，未自动拆分。');
@@ -175,12 +195,12 @@ export function splitCampusSections(fragment, { assets = [] } = {}) {
     if (!field) warnings.push(`“${title}”尚未分配到学校栏目，已单独保留。`);
     else if (!meaningfulNodes($, content)) warnings.push(`“${title}”标题后没有正文，请确认该栏目是否留空。`);
   }
-  const boundaries = nodes.map((element, index) => ({ element, index, level: headingLevel(element) })).filter(entry => entry.level && entry.level <= candidate.level);
+  const boundaries = nodes.map((element, index) => ({ element, index, level: headingLevel(element) })).filter(entry => entry.level && entry.level <= candidate.level && !internalApplicationHeading(entry.element));
   const prefix = nodes.slice(0, boundaries[0].index);
   if (meaningfulNodes($, prefix)) appendSection({ content: prefix });
   for (let index = 0; index < boundaries.length; index++) {
     const boundary = boundaries[index];
-    const field = boundary.level === candidate.level ? FIELD_BY_HEADING.get(normalizedHeading($(boundary.element).text())) : undefined;
+    const field = boundary.level === candidate.level ? fieldByHeading.get(normalizedHeading($(boundary.element).text())) : undefined;
     appendSection({ heading: boundary.element, field, content: nodes.slice(boundary.index + 1, boundaries[index + 1]?.index ?? nodes.length) });
   }
   return { sections, warnings };

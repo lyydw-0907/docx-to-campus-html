@@ -6,9 +6,10 @@ import { randomUUID } from 'node:crypto';
 import { load } from 'cheerio';
 import JSZip from 'jszip';
 import { convertDocx } from './convert.mjs';
-import { makeDemoDocx } from './fixtures.mjs';
+import { makeDemoDocx, makeProgressDemoDocx } from './fixtures.mjs';
 import { compareFragments, createProbe, safeImageUrl } from './probe.mjs';
 import { importImageUrls } from './image-import.mjs';
+import { validateDocumentType } from './sections.mjs';
 
 const publicRoot = fileURLToPath(new URL('../public/', import.meta.url));
 const MAX_BODY = 20 * 1024 * 1024;
@@ -136,8 +137,9 @@ export function createServer() {
         return reply(response, 200, await readFile(`${publicRoot}${name}`), type);
       }
       if (request.method === 'GET' && url.pathname === '/api/demo-docx') {
-        response.setHeader('Content-Disposition', 'attachment; filename="demo.docx"');
-        return reply(response, 200, await makeDemoDocx(), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        const documentType = validateDocumentType(url.searchParams.get('documentType') ?? 'application');
+        response.setHeader('Content-Disposition', `attachment; filename="${documentType === 'progress' ? 'progress-demo.docx' : 'demo.docx'}"`);
+        return reply(response, 200, await (documentType === 'progress' ? makeProgressDemoDocx() : makeDemoDocx()), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       }
       if (request.method === 'GET' && url.pathname === '/api/probe') {
         probe ??= createProbe();
@@ -151,6 +153,7 @@ export function createServer() {
         if (converting) return reply(response, 409, { error: '正在转换另一个文档，请稍后再试。' });
         converting = true;
         try {
+          const documentType = validateDocumentType(url.searchParams.get('documentType') ?? 'application');
           const fontMode = url.searchParams.get('fontMode') ?? 'uniform';
           if (!['word', 'uniform'].includes(fontMode)) throw new Error('字号模式应为 word 或 uniform。');
           const input = await body(request);
@@ -160,7 +163,7 @@ export function createServer() {
           const formulaFormat = url.searchParams.get('formulaFormat') || 'png';
           if (![14, 16, 18, 20].includes(fontSize) || ![2, 3, 4].includes(scale)) throw new Error('字号或清晰度选项无效。');
           if (!['mathml', 'png'].includes(formulaFormat)) throw new Error('公式输出应为 mathml 或 png。');
-          const result = await convertDocx(input, { fontMode, fontSize, scale, imageMode: 'embedded', formulaFormat });
+          const result = await convertDocx(input, { documentType, fontMode, fontSize, scale, imageMode: 'embedded', formulaFormat });
           const jobId = remember(result);
           return reply(response, 200, { jobId, fragment: result.fragment, preview: result.preview, manifest: result.manifest, assets: assetSummaries(result), sections: result.sections || [] });
         } finally { converting = false; }
@@ -229,8 +232,8 @@ export function createServer() {
         if (sectionIndex.length) zip.file('sections/index.json', JSON.stringify(sectionIndex, null, 2));
         const nativeMath = result.manifest.options?.formulaFormat === 'mathml';
         const copyInstructions = sectionIndex.length
-          ? '已按申报栏目分别导出正文。请先查看 sections/index.json，将 kind 为 field 的栏目 HTML 分别复制到对应学校编辑框；蓝色栏目名称由学校自动显示，片段不重复包含该外层标题。kind 为 unassigned 的内容需确认归属后再使用。不要将根目录 fragment.html 的整篇内容粘贴到单个栏目，也不要复制预览文件。\n'
-          : '当前文档未能确定申报栏目。根目录 fragment.html 保留整篇内容，请核对学校各编辑框后自行分配，不能将整篇直接粘贴到单个栏目；preview.html 仅供本地预览。\n';
+          ? '已按所选学校表单的栏目分别导出正文。请先查看 sections/index.json，将 kind 为 field 的栏目 HTML 分别复制到对应学校编辑框；蓝色栏目名称由学校自动显示，片段不重复包含该外层标题。kind 为 unassigned 的内容需确认归属后再使用。不要将根目录 fragment.html 的整篇内容粘贴到单个栏目，也不要复制预览文件。\n'
+          : '当前文档未能确定所选学校表单的栏目。根目录 fragment.html 保留整篇内容，请核对学校各编辑框后自行分配，不能将整篇直接粘贴到单个栏目；preview.html 仅供本地预览。\n';
         const exportInstructions = options.mode === 'mapped'
           ? '本包为已替换图片地址的 HTML。正文片段使用所提供的绝对 HTTP(S) 图片地址，保留导出宽高；这些地址应来自学校插图功能实际上传的图片，不能编造地址或上传记录。\n'
           : result.assets.length

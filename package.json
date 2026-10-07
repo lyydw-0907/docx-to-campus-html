@@ -3,20 +3,34 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "本地 Word 转 HTML 工具，面向华中农业大学大创申报系统。",
+  "description": "华中农业大学大创 Word 转 HTML 工具，支持浏览器 MathML 在线转换和本地转换。",
   "license": "MIT",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "setup:pandoc": "node tools/setup-pandoc.mjs",
     "start": "node src/server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "demo": "node tools/demo.mjs"
+    "demo": "node tools/demo.mjs",
+    "build:browser": "node tools/build-browser.mjs",
+    "build:cloudflare": "npm run build:browser && node tools/build-cloudflare.mjs",
+    "preview:browser": "node tools/serve-browser.mjs",
+    "start:browser": "node tools/start-browser.mjs"
   },
-  "overrides": { "@xmldom/xmldom": "0.9.12" },
+  "overrides": {
+    "@xmldom/xmldom": "0.9.12"
+  },
   "dependencies": {
+    "buffer": "6.0.3",
     "cheerio": "1.0.0",
+    "fflate": "0.8.3",
     "jszip": "3.10.1",
     "mathjax-full": "3.2.2",
+    "pandoc-wasm": "1.1.0",
     "sharp": "0.34.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

@@ -1,6 +1,9 @@
 import { createImageMapping } from '/image-mapping.js';
 import { createJobRecovery } from '/job-recovery.js';
-import { createSectionView } from '/section-view.js';
+import { createSectionView, sectionDisplayTitle } from '/section-view.js';
+import { startSiteVisits } from '/site-visits.js';
+
+startSiteVisits();
 
 const byId = id => document.getElementById(id);
 let current;
@@ -23,7 +26,25 @@ const jobRecovery = createJobRecovery({
 const requestJob = (route, init) => jobRecovery.request(route, init);
 const imageMapping = createImageMapping({ getCurrent: () => current, assetInputs, byId, json, download, status, showMappedSource, resetMappedSource, requestJob,
   getCopyContext: () => sectionView.token(), isCopyContextCurrent: token => sectionView.matches(token),
-  getCopyState: () => sectionView.snapshot(), copySelectedSource });
+  getCopyState: () => {
+    const selected = sectionView.snapshot();
+    return selected && { ...selected, displayTitle: sectionDisplayTitle(selected) };
+  }, copySelectedSource });
+
+const demoRequestUrl = () => `/api/demo-docx?${new URLSearchParams({ documentType: byId('document-type').value })}`;
+function updateDocumentTypeHelp() {
+  const progress = byId('document-type').value === 'progress';
+  byId('document-type-help').textContent = progress
+    ? '进展检查分为“项目进展检查”和“项目后期具体工作计划”两栏。请在 Word 中用这两个名称作同一级的外层标题，内部小标题低一级；其他同级标题会保留为待分配内容。可先试用示例查看格式。'
+    : '选择学校表单后转换，按 Word 的栏目标题分栏预览和复制。';
+  byId('demo').textContent = progress ? '试用进展检查示例' : '试用示例';
+}
+byId('document-type').addEventListener('change', () => {
+  updateDocumentTypeHelp();
+  const resultForm = current?.manifest.options?.documentType === 'progress' ? '项目进展检查' : '申报书';
+  status(current ? `学校表单设置用于下次转换。当前结果仍为“${resultForm}”，图片对应关系保留；请重新转换 Word 以应用新设置。` : '学校表单已切换，可选择 Word 文件或试用对应示例。');
+});
+updateDocumentTypeHelp();
 
 function showMappedSource(exported) {
   if (exported.section) sectionView.setMappedSection(exported.section);
@@ -41,7 +62,7 @@ function renderSelectedSection() {
   showPreview(selected.preview);
   byId('counts').textContent = `${selected.formulaCount} 个公式 · ${selected.imageCount} 张图片`;
   byId('copy').disabled = !selected.copyable;
-  byId('copy').textContent = selected.kind === 'whole' ? '复制整篇 HTML' : ['field', 'unassigned'].includes(selected.kind) ? `复制“${selected.title}”正文` : '复制片段';
+  byId('copy').textContent = selected.kind === 'whole' ? '复制整篇 HTML' : ['field', 'unassigned'].includes(selected.kind) ? `复制“${sectionDisplayTitle(selected)}”正文` : '复制片段';
   for (const id of ['section-select', 'mapping-section-select']) byId(id).value = selected.id;
   const nativeMath = current.manifest.options?.formulaFormat === 'mathml';
   let note;
@@ -103,7 +124,8 @@ function showResult(result) {
     const select = byId(id); select.replaceChildren();
     for (const item of sectionView.items()) {
       const option = document.createElement('option'); option.value = item.id;
-      option.textContent = item.title + (item.kind === 'unassigned' ? '（待分配内容）' : '');
+      option.textContent = sectionDisplayTitle(item) + (item.kind === 'unassigned' ? '（待分配内容）' : '');
+      option.title = item.title;
       select.append(option);
     }
     select.value = sectionView.snapshot().id;
@@ -145,15 +167,16 @@ async function convert(input) {
   assetInputs.clear();
   imageMapping.reset();
   byId('convert').disabled = true; byId('demo').disabled = true;
+  byId('document-type').disabled = true;
   status('正在转换正文和公式…');
   try {
     const sizeChoice = byId('font-size').value;
-    const params = new URLSearchParams({ fontMode: sizeChoice === 'word' ? 'word' : 'uniform', fontSize: sizeChoice === 'word' ? '14' : sizeChoice, scale: byId('scale').value, formulaFormat: byId('formula-format').value });
+    const params = new URLSearchParams({ documentType: byId('document-type').value, fontMode: sizeChoice === 'word' ? 'word' : 'uniform', fontSize: sizeChoice === 'word' ? '14' : sizeChoice, scale: byId('scale').value, formulaFormat: byId('formula-format').value });
     const result = await json(await fetch(`/api/convert?${params}`, { method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, body: input }));
     showResult(result);
     jobRecovery.remember(result, input, params);
   } catch (error) { status(error.message, true); }
-  finally { byId('convert').disabled = false; byId('demo').disabled = false; }
+  finally { byId('convert').disabled = false; byId('demo').disabled = false; byId('document-type').disabled = false; }
 }
 function selectFiles(files) {
   if (!files.length) return;
@@ -196,8 +219,12 @@ byId('convert').addEventListener('click', () => {
   convert(selectedFile);
 });
 byId('demo').addEventListener('click', async () => {
-  try { const response = await fetch('/api/demo-docx'); if (!response.ok) throw new Error('示例读取失败。'); await convert(await response.blob()); }
+  if (byId('convert').disabled) return;
+  byId('convert').disabled = true; byId('demo').disabled = true;
+  byId('document-type').disabled = true;
+  try { const response = await fetch(demoRequestUrl()); if (!response.ok) throw new Error('示例读取失败。'); await convert(await response.blob()); }
   catch (error) { status(error.message, true); }
+  finally { byId('convert').disabled = false; byId('demo').disabled = false; byId('document-type').disabled = false; }
 });
 async function copySelectedSource() {
   if (!current || !sectionView.snapshot()?.copyable) return;
