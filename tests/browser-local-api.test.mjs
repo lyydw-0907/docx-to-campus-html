@@ -333,6 +333,70 @@ test('jobs retain at most three documents and clearJobs revokes every asset URL'
   } finally { api.dispose(); }
 });
 
+test('restore candidates preserve the active old job across four conversions while retaining the three-job limit', async () => {
+  const api = createBrowserApi({ convert: async () => fixture() });
+  try {
+    const original = await start(api);
+    const originalUrl = api.assetUrl(original.jobId, 'image-1.png');
+    const candidates = [];
+    for (let index = 0; index < 4; index++) {
+      const response = await api.request('/api/convert?formulaFormat=mathml', {
+        method: 'POST', body: pixels, preserveJobId: original.jobId,
+      });
+      assert.equal(response.status, 200);
+      candidates.push(await response.json());
+      assert.equal(api.assetUrl(original.jobId, 'image-1.png'), originalUrl);
+      assert.equal((await api.request(`/api/assets/${original.jobId}/image-1.png`)).status, 200);
+      assert.deepEqual([...new Uint8Array(await (await fetch(originalUrl)).arrayBuffer())], [...pixels]);
+    }
+    for (const candidate of candidates.slice(0, 2)) {
+      assert.equal((await api.request(`/api/assets/${candidate.jobId}/image-1.png`)).status, 410);
+      await assert.rejects(fetch(candidate.assets[0].previewUrl));
+    }
+    for (const candidate of candidates.slice(2)) assert.equal((await api.request(`/api/assets/${candidate.jobId}/image-1.png`)).status, 200);
+    // Preservation applies to a single conversion, rather than pinning a job.
+    await start(api);
+    assert.equal((await api.request(`/api/assets/${original.jobId}/image-1.png`)).status, 410);
+    await assert.rejects(fetch(originalUrl));
+  } finally { api.dispose(); }
+});
+
+test('invalid or nonexistent preserve IDs and URL query options do not change FIFO eviction', async () => {
+  for (const invalid of [undefined, null, '', 123, {}, ['a'], '00000000-0000-0000-0000-000000000000']) {
+    const api = createBrowserApi({ convert: async () => fixture() });
+    try {
+      const original = await start(api);
+      await start(api); await start(api);
+      const response = await api.request(`/api/convert?formulaFormat=mathml&preserveJobId=${original.jobId}`, {
+        method: 'POST', body: pixels, preserveJobId: invalid,
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await api.request(`/api/assets/${original.jobId}/image-1.png`)).status, 410);
+      await assert.rejects(fetch(original.assets[0].previewUrl));
+    } finally { api.dispose(); }
+  }
+});
+
+test('preserving a job never renews its existing expiry time', async () => {
+  const savedNow = Date.now;
+  const initialTime = savedNow();
+  let elapsed = 0;
+  Date.now = () => initialTime + elapsed;
+  const api = createBrowserApi({ convert: async () => fixture() });
+  try {
+    const original = await start(api);
+    elapsed = 29 * 60 * 1000;
+    const preserved = await api.request('/api/convert?formulaFormat=mathml', { method: 'POST', body: pixels, preserveJobId: original.jobId });
+    assert.equal(preserved.status, 200);
+    const candidate = await preserved.json();
+    assert.equal(api.assetUrl(original.jobId, 'image-1.png'), original.assets[0].previewUrl);
+    elapsed = 30 * 60 * 1000;
+    assert.equal((await api.request(`/api/assets/${original.jobId}/image-1.png`)).status, 410);
+    assert.equal((await api.request(`/api/assets/${candidate.jobId}/image-1.png`)).status, 200);
+    await assert.rejects(fetch(original.assets[0].previewUrl));
+  } finally { Date.now = savedNow; api.dispose(); }
+});
+
 test('synthetic demo performs only one cached static GET; external demo sources are rejected', async () => {
   const savedFetch = globalThis.fetch;
   const calls = [];

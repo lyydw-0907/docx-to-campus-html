@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createJobRecovery } from '../public/job-recovery.js';
+import { createJobRecovery, conversionIdentity } from '../public/job-recovery.js';
 
 const OLD_ID = '11111111-1111-4111-8111-111111111111';
 const NEW_ID = '22222222-2222-4222-8222-222222222222';
@@ -32,6 +32,27 @@ function harness(fetchRequest, callbacks = {}) {
   recovery.remember(current, originalInput, params);
   return { recovery, originalInput, params, getCurrent: () => current, setCurrent: result => { current = result; } };
 }
+
+test('progress input snapshot retains original input and captured conversion settings', () => {
+  const state = harness(async () => json({}));
+  const snapshot = state.recovery.getInput();
+  state.params.fontSize = '20';
+  assert.equal(snapshot.input, state.originalInput);
+  assert.equal(new URLSearchParams(snapshot.params).get('fontSize'), '14');
+  snapshot.params = 'fontSize=8';
+  assert.equal(new URLSearchParams(state.recovery.getInput().params).get('fontSize'), '14');
+  state.recovery.clear();
+  assert.throws(() => state.recovery.getInput(), /当前文档已变化/);
+});
+
+test('progress identity excludes job and preview while preserving text and asset metadata', () => {
+  const original = fixture();
+  const restored = structuredClone(original);
+  restored.jobId = NEW_ID; restored.preview = 'new local preview';
+  assert.equal(conversionIdentity(restored), conversionIdentity(original));
+  restored.assets[0].width++;
+  assert.notEqual(conversionIdentity(restored), conversionIdentity(original));
+});
 
 test('scoped upload download keeps its captured section query after job restoration', async () => {
   const calls = [];

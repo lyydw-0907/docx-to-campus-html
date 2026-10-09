@@ -136,5 +136,38 @@ export function createImageOrder(options = {}) {
       changedCount
     };
   }
-  return { rows, select, retainMappings, validate };
+  function exportState() {
+    return state.map(({ filename, selection, existingUrl, keepUrl }) => ({ filename, selection, existingUrl, keepUrl }));
+  }
+  function validateState(snapshot) {
+    const keys = ['filename', 'selection', 'existingUrl', 'keepUrl'];
+    if (!Array.isArray(snapshot) || snapshot.length !== state.length) throw new Error('已保存的图片选择无效。');
+    const names = new Set();
+    const occupied = new Set();
+    const restored = snapshot.map(saved => {
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(saved)) ||
+        Object.keys(saved).length !== keys.length || keys.some(key => !Object.hasOwn(saved, key)) ||
+        typeof saved.filename !== 'string' || !assetNames.has(saved.filename) || names.has(saved.filename) ||
+        typeof saved.selection !== 'string' || typeof saved.existingUrl !== 'string' || saved.existingUrl.length > 4096 ||
+        typeof saved.keepUrl !== 'string' || saved.keepUrl.length > 4096 ||
+        saved.keepUrl && saved.keepUrl !== saved.existingUrl ||
+        saved.selection !== '' && !choices.has(saved.selection) && !(saved.selection === 'keep' && saved.keepUrl)) {
+        throw new Error('已保存的图片选择无效。');
+      }
+      names.add(saved.filename);
+      if (choices.has(saved.selection)) {
+        if (occupied.has(saved.selection)) throw new Error('已保存的图片选择重复。');
+        occupied.add(saved.selection);
+      }
+      return { filename: saved.filename, selection: saved.selection, existingUrl: saved.existingUrl, keepUrl: saved.keepUrl };
+    });
+    const byFilename = new Map(restored.map(row => [row.filename, row]));
+    return assets.map(asset => byFilename.get(asset.filename));
+  }
+  function restoreState(snapshot) {
+    const restored = validateState(snapshot);
+    state.splice(0, state.length, ...restored);
+  }
+  return { rows, select, retainMappings, validate, exportState, validateState, restoreState };
 }

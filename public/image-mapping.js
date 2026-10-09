@@ -1,5 +1,93 @@
 import { createImageOrder, validateImageUrls } from '/image-order.js';
 
+const progressError = () => new Error('工作进度中的图片对应关系无效，请检查文件或重新转换。');
+function progressRecord(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value)) ||
+    Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) throw progressError();
+}
+const addressText = value => /[\u0000-\u001f\u007f\\]/.test(value) ? value : value.trim();
+function sameValidAddress(first, second) {
+  return validateImageUrls([first]).valid && validateImageUrls([second]).valid &&
+    new URL(first.trim()).href === new URL(second.trim()).href;
+}
+
+/** Validate a saved mapping against freshly converted metadata, without DOM or network effects. */
+export function validateImageMappingState(snapshot, current) {
+  progressRecord(snapshot, ['version', 'urls', 'sources', 'orders']);
+  if (snapshot.version !== 1 || !current || !Array.isArray(current.assets) ||
+    current.sections !== undefined && !Array.isArray(current.sections)) throw progressError();
+  const assets = new Map();
+  for (const asset of current.assets) {
+    if (!asset || typeof asset.filename !== 'string' || !asset.filename ||
+      /[\/\\\u0000-\u001f\u007f]/.test(asset.filename) || ['.', '..'].includes(asset.filename) ||
+      assets.has(asset.filename)) throw progressError();
+    assets.set(asset.filename, asset);
+  }
+  const scopes = new Map([['whole', [...assets.values()]]]);
+  const sectionIds = new Set(['whole']);
+  for (const section of current.sections ?? []) {
+    if (!section || typeof section.id !== 'string' || !section.id || sectionIds.has(section.id)) throw progressError();
+    sectionIds.add(section.id);
+    if (!['field', 'unassigned'].includes(section.kind)) continue;
+    if (!Array.isArray(section.assetFilenames) || new Set(section.assetFilenames).size !== section.assetFilenames.length ||
+      section.assetFilenames.some(filename => typeof filename !== 'string' || !assets.has(filename))) throw progressError();
+    const filenames = new Set(section.assetFilenames);
+    scopes.set(section.id, current.assets.filter(asset => filenames.has(asset.filename)));
+  }
+  progressRecord(snapshot.urls, [...assets.keys()]);
+  const urls = Object.fromEntries([...assets.keys()].map(filename => {
+    const value = snapshot.urls[filename];
+    // An unfinished manual address remains input text. It cannot become a link
+    // or pass the usual copy validation merely because a progress file is read.
+    if (typeof value !== 'string' || value.length > 4096) throw progressError();
+    return [filename, value];
+  }));
+  if (!Array.isArray(snapshot.sources) || snapshot.sources.length > scopes.size ||
+    !Array.isArray(snapshot.orders) || snapshot.orders.length > scopes.size) throw progressError();
+  const sourceIds = new Set();
+  const sources = snapshot.sources.map(source => {
+    progressRecord(source, ['sectionId', 'html', 'pageUrl']);
+    if (typeof source.sectionId !== 'string' || !scopes.has(source.sectionId) || sourceIds.has(source.sectionId) ||
+      typeof source.html !== 'string' || source.html.length > 2 * 1024 * 1024 ||
+      typeof source.pageUrl !== 'string' || source.pageUrl.length > 4096) throw progressError();
+    sourceIds.add(source.sectionId);
+    return { sectionId: source.sectionId, html: source.html, pageUrl: source.pageUrl };
+  });
+  const orderIds = new Set();
+  const orders = snapshot.orders.map(order => {
+    progressRecord(order, ['sectionId', 'images', 'rows', 'pendingFilenames', 'confirmed']);
+    if (typeof order.sectionId !== 'string' || !scopes.has(order.sectionId) || orderIds.has(order.sectionId) ||
+      typeof order.confirmed !== 'boolean' || !Array.isArray(order.images) || !Array.isArray(order.pendingFilenames)) throw progressError();
+    const scoped = scopes.get(order.sectionId);
+    if (!scoped.length || order.images.length !== scoped.length || order.pendingFilenames.length > scoped.length) throw progressError();
+    orderIds.add(order.sectionId);
+    const names = new Set(scoped.map(asset => asset.filename));
+    const pending = new Set();
+    for (const filename of order.pendingFilenames) {
+      if (typeof filename !== 'string' || !names.has(filename) || pending.has(filename)) throw progressError();
+      pending.add(filename);
+    }
+    if (order.confirmed !== (pending.size === 0)) throw progressError();
+    const images = order.images.map(image => {
+      progressRecord(image, ['index', 'url']);
+      if (!Number.isSafeInteger(image.index) || image.index < 1 || !validateImageUrls([image.url]).valid) throw progressError();
+      return { index: image.index, url: image.url };
+    });
+    const draft = createImageOrder({ assets: scoped, images,
+      existingUrls: Object.fromEntries(scoped.map(asset => [asset.filename, urls[asset.filename]])) });
+    draft.restoreState(order.rows);
+    for (const row of draft.rows()) {
+      if (row.existingUrl !== addressText(urls[row.filename]) ||
+        !pending.has(row.filename) && !sameValidAddress(row.url, urls[row.filename])) throw progressError();
+    }
+    if (order.confirmed && !draft.validate().valid) throw progressError();
+    return { sectionId: order.sectionId, images, rows: draft.exportState(),
+      pendingFilenames: scoped.filter(asset => pending.has(asset.filename)).map(asset => asset.filename), confirmed: order.confirmed };
+  });
+  return { version: 1, urls, sources, orders };
+}
+
 /** Paste-to-map workflow. Imported HTML and school images are never rendered. */
 export function createImageMapping({ getCurrent, assetInputs, byId, json, download, status, showMappedSource, resetMappedSource, requestJob,
   getCopyContext, isCopyContextCurrent, getCopyState, copySelectedSource }) {
@@ -22,7 +110,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
   };
   const filledCount = assets => assets.filter(asset => assetInputs.get(asset.filename)?.value.trim()).length;
   const addressesValid = assets => assets.length > 0 && validateImageUrls(assets.map(asset => assetInputs.get(asset.filename)?.value)).valid;
-  const existingUrls = assets => Object.fromEntries(assets.map(asset => [asset.filename, assetInputs.get(asset.filename)?.value.trim() || '']));
+  const existingUrls = assets => Object.fromEntries(assets.map(asset => [asset.filename, assetInputs.get(asset.filename)?.value || '']));
   const orderIsCurrent = state => state.current === getCurrent() && orders.get(state.scopeId) === state;
   const hasUnconfirmed = assets => {
     const names = new Set(assets.map(asset => asset.filename));
@@ -183,8 +271,8 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
       : `${note}${checked.changedCount ? `确认后将填写或修改 ${checked.changedCount} 个地址。` : '当前选择会保留已填地址。'}请核对每张原图与学校图片是否对应。`;
     if (updateReadiness) refresh();
   }
-  function presentOrder(report, current, selected, confirmed = false) {
-    const list = byId('image-order-list');
+  function presentOrder(report, current, selected, confirmed = false, restored, render = true) {
+    const list = render ? byId('image-order-list') : document.createElement('div');
     list.replaceChildren();
     const state = {
       report, current, scopeId: selected.id, scopeTitle: selected.displayTitle ?? selected.title, assets: scopedAssets(selected), confirmed,
@@ -192,6 +280,10 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
     };
     state.pendingFilenames = new Set(confirmed ? [] : state.assets.map(asset => asset.filename));
     state.draft = createImageOrder({ assets: state.assets, images: report.imageChoices, existingUrls: existingUrls(state.assets) });
+    if (restored) {
+      state.draft.restoreState(restored.rows);
+      state.pendingFilenames = new Set(restored.pendingFilenames);
+    }
     orders.set(selected.id, state);
     for (const entry of state.draft.rows()) {
       const number = current.assets.findIndex(asset => asset.filename === entry.filename) + 1;
@@ -232,12 +324,55 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
       chooser.append(select);
       description.append(label, chooser, url, view, change); row.append(image, description); list.append(row); state.nodes.push(row);
     }
-    if (!state.draft.validate().valid) {
+    if (!restored && !state.draft.validate().valid) {
       state.confirmed = false;
       state.pendingFilenames = new Set(state.assets.map(asset => asset.filename));
     }
-    byId('image-order-confirmation').hidden = false;
-    updateOrder(state);
+    if (render) {
+      byId('image-order-confirmation').hidden = false;
+      updateOrder(state);
+    }
+    return state;
+  }
+  function exportState() {
+    const current = getCurrent();
+    if (!current) throw new Error('请先转换 Word，再保存工作进度。');
+    const savedSources = new Map(sources);
+    if (displayedCurrent === current && displayedScope) savedSources.set(displayedScope, {
+      html: byId('school-image-source').value, pageUrl: byId('school-page-url').value,
+    });
+    const snapshot = {
+      version: 1,
+      urls: Object.fromEntries(current.assets.map(asset => [asset.filename, assetInputs.get(asset.filename)?.value ?? ''])),
+      sources: [...savedSources].map(([sectionId, source]) => ({ sectionId, html: source.html, pageUrl: source.pageUrl })),
+      orders: [...orders.values()].filter(orderIsCurrent).map(state => ({ sectionId: state.scopeId,
+        images: state.report.imageChoices.map(({ index, url }) => ({ index, url })), rows: state.draft.exportState(),
+        pendingFilenames: [...state.pendingFilenames], confirmed: state.confirmed })),
+    };
+    return validateImageMappingState(snapshot, current);
+  }
+  function validateState(snapshot, freshResult = getCurrent()) {
+    return validateImageMappingState(snapshot, freshResult);
+  }
+  function restoreState(snapshot) {
+    const current = getCurrent();
+    const saved = validateImageMappingState(snapshot, current);
+    // Validate everything before touching controls or cancelling active work.
+    revision++;
+    mappingRequest = undefined; importRequest = undefined;
+    resetMappedSource();
+    orders.clear(); sources.clear();
+    for (const [filename, value] of Object.entries(saved.urls)) assetInputs.get(filename).value = value;
+    for (const source of saved.sources) sources.set(source.sectionId, { html: source.html, pageUrl: source.pageUrl });
+    for (const order of saved.orders) {
+      const selected = order.sectionId === 'whole' ? { id: 'whole', title: '整篇文档', assetFilenames: current.assets.map(asset => asset.filename) }
+        : current.sections.find(section => section.id === order.sectionId);
+      presentOrder({ imageChoices: order.images }, current, selected, order.confirmed, order, false);
+    }
+    displayedCurrent = current; displayedScope = undefined;
+    byId('school-image-source').value = ''; byId('school-page-url').value = '';
+    message('已恢复图片地址和对应关系；未确认的选择仍需确认。');
+    refresh();
   }
   byId('school-image-source').addEventListener('input', invalidate);
   byId('school-page-url').addEventListener('input', invalidate);
@@ -294,6 +429,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
         body: JSON.stringify({ html, pageUrl: byId('school-page-url').value.trim(), sectionId: selected.id })
       }));
       if (!isCurrent()) return;
+      revision++;
       const { filled, preserved } = fillEmpty(report.matches, assets);
       const remaining = assets.length - filledCount(assets);
       const notes = report.warnings.slice(0, 3).join('；');
@@ -366,5 +502,5 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
       refresh();
     }
   });
-  return { reset, invalidate, refresh, getRevision: () => revision };
+  return { reset, invalidate, refresh, exportState, validateState, restoreState, getRevision: () => revision };
 }

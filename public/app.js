@@ -2,6 +2,7 @@ import { createImageMapping } from '/image-mapping.js';
 import { createJobRecovery } from '/job-recovery.js';
 import { createSectionView, sectionDisplayTitle } from '/section-view.js';
 import { startSiteVisits } from '/site-visits.js';
+import { createProgressActions } from '/progress-actions.js';
 
 startSiteVisits();
 
@@ -10,6 +11,10 @@ let current;
 let previewUrl;
 let previewHtml;
 let selectedFile;
+let conversionBusy = false;
+let workGeneration = 0;
+let progressKind = false;
+let progressDisabled;
 const assetInputs = new Map();
 const sectionView = createSectionView();
 const jobRecovery = createJobRecovery({
@@ -30,6 +35,109 @@ const imageMapping = createImageMapping({ getCurrent: () => current, assetInputs
     const selected = sectionView.snapshot();
     return selected && { ...selected, displayTitle: sectionDisplayTitle(selected) };
   }, copySelectedSource });
+
+const progressContext = () => ({ generation: workGeneration, current, selectedFile,
+  section: sectionView.token(), mappingRevision: imageMapping.getRevision() });
+const progressActions = createProgressActions({
+  capture: kind => {
+    if (conversionBusy) throw new Error('请等待转换完成后再保存或恢复进度。');
+    const context = progressContext();
+    if (kind === 'restore') return { context };
+    if (!current) throw new Error('请先转换 Word，再保存工作进度。');
+    const remembered = jobRecovery.getInput();
+    const params = new URLSearchParams(remembered.params);
+    return { ...remembered, context, result: current, mapping: imageMapping.exportState(),
+      selectedSectionId: sectionView.snapshot().id,
+      name: remembered.input.name || (params.get('documentType') === 'progress' ? 'progress-demo.docx' : 'demo.docx') };
+  },
+  isCurrent: context => context.generation === workGeneration && context.current === current
+    && context.selectedFile === selectedFile && sectionView.matches(context.section)
+    && context.mappingRevision === imageMapping.getRevision(),
+  convert: async (input, params, signal) => json(await fetch(`/api/convert?${params}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, body: input, signal, preserveJobId: current?.jobId,
+  })),
+  validate: (snapshot, result) => imageMapping.validateState(snapshot, result),
+  commit: commitProgress,
+  download, status, busy: setProgressBusy,
+  cancelConversion: () => { const cancel = byId('cancel-conversion'); if (cancel && !cancel.hidden) cancel.click(); },
+});
+
+function updateProgressControls() {
+  byId('save-progress').disabled = !current || conversionBusy || Boolean(progressKind);
+  byId('progress-file').disabled = conversionBusy || Boolean(progressKind);
+}
+function setProgressBusy(kind) {
+  progressKind = kind;
+  byId('cancel-progress').hidden = !kind;
+  byId('cancel-progress').textContent = kind === 'save' ? '取消保存' : '取消恢复';
+  if (kind === 'restore') {
+    progressDisabled = new Map([...document.querySelectorAll('#conversion-controls input, #conversion-controls select, #conversion-controls button')]
+      .filter(node => node.id !== 'cancel-conversion').map(node => [node, node.disabled]));
+    for (const node of progressDisabled.keys()) node.disabled = true;
+    for (const id of ['workspace', 'section-controls', 'mapping']) byId(id).inert = true;
+  } else if (!kind && progressDisabled) {
+    for (const [node, disabled] of progressDisabled) node.disabled = disabled;
+    progressDisabled = undefined;
+    for (const id of ['workspace', 'section-controls', 'mapping']) byId(id).inert = false;
+    byId('scale').disabled = byId('formula-format').value === 'mathml';
+  }
+  updateProgressControls();
+}
+function setConversionBusy(value) {
+  conversionBusy = value;
+  for (const id of ['convert', 'demo', 'file', 'document-type']) byId(id).disabled = value;
+  updateProgressControls();
+}
+function commitProgress(result, candidate) {
+  const file = new File([candidate.source], candidate.progress.sourceName, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const params = new URLSearchParams(candidate.progress.params);
+  const previousControls = { selectedFile, files: byId('file').files, name: byId('file-name').textContent,
+    settings: ['document-type', 'formula-format', 'font-size', 'scale'].map(id => [id, byId(id).value]) };
+  const previous = current && { result: current, input: jobRecovery.getInput(), mapping: imageMapping.exportState(), sectionId: sectionView.snapshot().id };
+  try {
+    showResult(result);
+    imageMapping.restoreState(candidate.mapping);
+    sectionView.select(candidate.progress.selectedSectionId);
+    renderSelectedSection(); imageMapping.refresh();
+    jobRecovery.remember(result, file, candidate.progress.params);
+    selectedFile = file;
+    try { const transfer = new DataTransfer(); transfer.items.add(file); byId('file').files = transfer.files; }
+    catch { byId('file').value = ''; }
+    byId('file-name').textContent = `已恢复：${file.name}`;
+    byId('document-type').value = params.get('documentType');
+    byId('formula-format').value = params.get('formulaFormat');
+    byId('font-size').value = params.get('fontMode') === 'word' ? 'word' : params.get('fontSize');
+    byId('scale').value = params.get('scale');
+    byId('scale').disabled = params.get('formulaFormat') === 'mathml';
+    updateDocumentTypeHelp();
+    workGeneration++;
+  } catch (error) {
+    if (previous) {
+      showResult(previous.result); imageMapping.restoreState(previous.mapping);
+      sectionView.select(previous.sectionId); renderSelectedSection(); imageMapping.refresh();
+      jobRecovery.remember(previous.result, previous.input.input, previous.input.params);
+    } else {
+      current = undefined; sectionView.setResult(undefined); jobRecovery.clear();
+      for (const id of ['workspace', 'section-controls', 'mapping']) byId(id).hidden = true;
+      byId('source').value = ''; byId('copy').disabled = true; clearPreview();
+      assetInputs.clear(); imageMapping.reset();
+    }
+    selectedFile = previousControls.selectedFile;
+    try { byId('file').files = previousControls.files; } catch { byId('file').value = ''; }
+    byId('file-name').textContent = previousControls.name;
+    for (const [id, value] of previousControls.settings) byId(id).value = value;
+    updateDocumentTypeHelp();
+    throw error;
+  }
+}
+byId('save-progress').addEventListener('click', () => progressActions.save());
+byId('progress-file').addEventListener('change', async () => {
+  const file = byId('progress-file').files[0];
+  if (file) await progressActions.restore(file);
+  byId('progress-file').value = '';
+});
+byId('cancel-progress').addEventListener('click', () => progressActions.cancel());
+updateProgressControls();
 
 const demoRequestUrl = () => `/api/demo-docx?${new URLSearchParams({ documentType: byId('document-type').value })}`;
 function updateDocumentTypeHelp() {
@@ -154,7 +262,10 @@ function showResult(result) {
     ? `转换完成。${nativeMath ? '原生公式无需图片上传。' : ''}在下方下载上传用图片，上传后一次粘贴学校源码即可识别地址。当前文档仍需保存回读检查。`
     : '转换完成。可复制 HTML 到学校编辑器的源码模式；当前文档尚未完成学校保存回读检查。');
 }
-async function convert(input) {
+async function convert(input, reserved = false) {
+  if (conversionBusy && !reserved || progressActions.isBusy()) return status('正在处理文件，请等待完成或先取消。', true);
+  workGeneration++;
+  setConversionBusy(true);
   jobRecovery.clear();
   current = undefined;
   sectionView.setResult(undefined);
@@ -166,8 +277,6 @@ async function convert(input) {
   clearPreview();
   assetInputs.clear();
   imageMapping.reset();
-  byId('convert').disabled = true; byId('demo').disabled = true;
-  byId('document-type').disabled = true;
   status('正在转换正文和公式…');
   try {
     const sizeChoice = byId('font-size').value;
@@ -176,9 +285,10 @@ async function convert(input) {
     showResult(result);
     jobRecovery.remember(result, input, params);
   } catch (error) { status(error.message, true); }
-  finally { byId('convert').disabled = false; byId('demo').disabled = false; byId('document-type').disabled = false; }
+  finally { setConversionBusy(false); }
 }
 function selectFiles(files) {
+  if (conversionBusy || progressActions.isBusy()) return status('正在处理文件，请等待完成或先取消，再选择新文件。', true);
   if (!files.length) return;
   const file = files[0];
   const error = files.length !== 1 ? '一次请选择或拖入一个 Word 文件。'
@@ -191,6 +301,7 @@ function selectFiles(files) {
     catch { byId('file').value = ''; }
   }
   selectedFile = error ? undefined : file;
+  workGeneration++;
   byId('file-name').textContent = selectedFile ? `已选择：${selectedFile.name}` : '支持 .docx，最大 20 MB；也可拖入文件';
   status(error || `已选择 ${file.name}，点击“转换文件”开始。`, Boolean(error));
 }
@@ -219,12 +330,11 @@ byId('convert').addEventListener('click', () => {
   convert(selectedFile);
 });
 byId('demo').addEventListener('click', async () => {
-  if (byId('convert').disabled) return;
-  byId('convert').disabled = true; byId('demo').disabled = true;
-  byId('document-type').disabled = true;
-  try { const response = await fetch(demoRequestUrl()); if (!response.ok) throw new Error('示例读取失败。'); await convert(await response.blob()); }
+  if (conversionBusy || progressActions.isBusy()) return;
+  setConversionBusy(true);
+  try { const response = await fetch(demoRequestUrl()); if (!response.ok) throw new Error('示例读取失败。'); await convert(await response.blob(), true); }
   catch (error) { status(error.message, true); }
-  finally { byId('convert').disabled = false; byId('demo').disabled = false; byId('document-type').disabled = false; }
+  finally { setConversionBusy(false); }
 });
 async function copySelectedSource() {
   if (!current || !sectionView.snapshot()?.copyable) return;

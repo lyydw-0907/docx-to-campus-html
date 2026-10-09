@@ -295,3 +295,258 @@ test('newly filled shared exact address does not silently confirm the other pend
   assert.equal(f.assetInputs.get('image-3.png').value, url(3));
   assert.equal(f.byId('copy-mapped').disabled, false);
 });
+
+test('progress export captures the visible source and unfinished input text without mutating mapping state', async t => {
+  const f = fixture(t);
+  await f.setUrl(1, 'unfinished / image address');
+  f.byId('school-image-source').value = '<script>untrusted source text only</script><img src="https://school.test/a.png">';
+  f.byId('school-page-url').value = 'unfinished page address';
+  f.choose('second');
+  f.byId('school-image-source').value = '<img src="https://school.test/b.png">';
+  f.byId('school-page-url').value = '\nhttp://unfinished';
+  const before = f.mapping.getRevision();
+  const snapshot = f.mapping.exportState();
+  assert.equal(snapshot.urls['image-1.png'], 'unfinished / image address');
+  assert.equal(snapshot.urls['image-2.png'], '');
+  assert.equal(snapshot.sources.find(source => source.sectionId === 'first').pageUrl, 'unfinished page address');
+  assert.equal(snapshot.sources.find(source => source.sectionId === 'second').pageUrl, '\nhttp://unfinished');
+  assert.match(snapshot.sources.find(source => source.sectionId === 'first').html, /<script>/);
+  assert.equal(f.mapping.getRevision(), before);
+  assert.equal(f.requests.length, 0);
+  snapshot.urls['image-1.png'] = url(1);
+  snapshot.sources[0].html = 'changed snapshot';
+  assert.equal(f.mapping.exportState().urls['image-1.png'], 'unfinished / image address');
+  f.choose('first'); assert.match(f.byId('school-image-source').value, /<script>/);
+});
+
+test('fresh conversion restores unfinished swapped order and confirms only after a new explicit click', async t => {
+  const f = fixture(t);
+  await f.importReport(orderReport([3, 1]));
+  const select = f.byId('image-order-list').children[0].children[1].children[1].children[0];
+  select.value = '2'; await select.fire('change');
+  const snapshot = f.mapping.exportState();
+  assert.equal(snapshot.orders[0].confirmed, false);
+  assert.deepEqual(snapshot.orders[0].pendingFilenames, ['image-1.png', 'image-3.png']);
+  const fresh = structuredClone(f.current); fresh.jobId = 'fresh-job';
+  f.mapping.validateState(snapshot, fresh);
+  f.replaceCurrent(fresh);
+  const revision = f.mapping.getRevision();
+  f.mapping.restoreState(snapshot);
+  assert.ok(f.mapping.getRevision() > revision);
+  const restoredSelect = f.byId('image-order-list').children[0].children[1].children[1].children[0];
+  assert.equal(restoredSelect.value, '2');
+  assert.equal(f.byId('image-order-list').children[0].children[0].src, '/api/assets/fresh-job/image-1.png');
+  assert.equal(f.byId('copy-mapped').disabled, true);
+  assert.equal(f.byId('confirm-image-order').disabled, false);
+  assert.equal(f.assetInputs.get('image-1.png').value, '');
+  assert.equal(f.requests.length, 1, 'restore does not request image or school URLs');
+  await f.byId('confirm-image-order').fire('click');
+  assert.equal(f.assetInputs.get('image-1.png').value, url(1));
+  assert.equal(f.assetInputs.get('image-3.png').value, url(3));
+  assert.equal(f.byId('copy-mapped').disabled, false);
+  assert.equal(f.byId('download-mapped').disabled, true);
+});
+
+test('progress restore retains confirmed fields and per-scope sources while other fields stay unfinished', async t => {
+  const f = fixture(t);
+  await f.importReport(orderReport([1, 3]));
+  await f.byId('confirm-image-order').fire('click');
+  f.byId('school-page-url').value = 'https://school.test/first';
+  f.choose('second');
+  f.byId('school-image-source').value = '<p>second source still incomplete</p>';
+  const saved = f.mapping.exportState();
+  f.replaceCurrent({ ...f.current, jobId: 'another-job' });
+  for (const input of f.assetInputs.values()) input.value = '';
+  f.mapping.restoreState(saved);
+  assert.equal(f.view.snapshot().mapped, false, 'cached mapped HTML is regenerated, not restored');
+  assert.equal(f.byId('copy-mapped').disabled, false);
+  assert.equal(f.byId('confirm-image-order').disabled, true);
+  assert.equal(f.byId('school-page-url').value, 'https://school.test/first');
+  f.choose('second');
+  assert.equal(f.byId('copy-mapped').disabled, true);
+  assert.equal(f.byId('school-image-source').value, '<p>second source still incomplete</p>');
+  f.choose('whole'); assert.equal(f.byId('copy-mapped').disabled, true);
+  assert.equal(f.assetInputs.get('image-1.png').value, url(1));
+  saved.urls['image-1.png'] = 'mutated snapshot';
+  assert.equal(f.assetInputs.get('image-1.png').value, url(1));
+});
+
+test('confirmed reversed image correspondence remains reversed and ready after restore', async t => {
+  const f = fixture(t);
+  await f.importReport(orderReport([3, 1])); await f.byId('confirm-image-order').fire('click');
+  const saved = f.mapping.exportState();
+  f.replaceCurrent({ ...f.current, jobId: 'reversed-confirmed' });
+  f.mapping.restoreState(saved);
+  assert.equal(f.assetInputs.get('image-1.png').value, url(3));
+  assert.equal(f.assetInputs.get('image-3.png').value, url(1));
+  assert.deepEqual(f.mapping.exportState().orders[0].rows.map(row => row.selection), ['1', '2']);
+  assert.equal(f.byId('confirm-image-order').disabled, true);
+  assert.equal(f.byId('copy-mapped').disabled, false);
+});
+
+test('restoring shared pending subsets neither promotes other drafts nor discards unresolved conflicts', async t => {
+  const f = fixture(t, { shared: true });
+  await f.importReport(orderReport([1, 3]));
+  f.choose('second');
+  await f.importReport({ detectedCount: 1, matches: [{ filename: 'image-1.png', url: url(1), method: 'filename' }],
+    warnings: [], canAdjustOrder: true, orderReady: false, imageChoices: [{ index: 1, url: url(1) }] });
+  const snapshot = f.mapping.exportState();
+  assert.deepEqual(snapshot.orders.find(order => order.sectionId === 'first').pendingFilenames, ['image-3.png']);
+  f.replaceCurrent({ ...f.current, jobId: 'shared-restore' });
+  f.mapping.restoreState(snapshot);
+  f.choose('second'); assert.equal(f.byId('copy-mapped').disabled, false);
+  f.choose('first'); assert.equal(f.byId('copy-mapped').disabled, true);
+  assert.deepEqual(f.mapping.exportState().orders.find(order => order.sectionId === 'first').pendingFilenames, ['image-3.png']);
+  await f.byId('confirm-image-order').fire('click');
+  assert.equal(f.byId('copy-mapped').disabled, false);
+});
+
+test('saved shared draft with a conflicting tentative URL remains adjustable after restore', async t => {
+  const f = fixture(t, { shared: true });
+  await f.setUrl(1, url(1)); await f.setUrl(3, url(3));
+  await f.importReport(orderReport([3, 1]));
+  const sharedSelect = f.byId('image-order-list').children[0].children[1].children[1].children[0];
+  sharedSelect.value = '1'; await sharedSelect.fire('change');
+  f.choose('second');
+  await f.importReport({ detectedCount: 1, matches: [{ filename: 'image-1.png', url: url(1), method: 'filename' }],
+    warnings: [], canAdjustOrder: true, orderReady: false, imageChoices: [{ index: 1, url: url(1) }] });
+  const snapshot = f.mapping.exportState();
+  f.replaceCurrent({ ...f.current, jobId: 'conflict-restore' }); f.mapping.restoreState(snapshot);
+  assert.equal(f.byId('copy-mapped').disabled, true);
+  assert.equal(f.byId('confirm-image-order').disabled, true, 'duplicate tentative URL still blocks confirmation');
+  const secondSelect = f.byId('image-order-list').children[1].children[1].children[1].children[0];
+  assert.equal(secondSelect.value, '2');
+  secondSelect.value = '1'; await secondSelect.fire('change');
+  assert.equal(f.byId('confirm-image-order').disabled, false);
+});
+
+test('invalid progress metadata is rejected before changing any current controls, drafts or revisions', async t => {
+  const f = fixture(t);
+  await f.importReport(orderReport([1, 3]));
+  const valid = f.mapping.exportState();
+  const invalid = [
+    snapshot => { snapshot.extra = true; },
+    snapshot => { snapshot.version = 2; },
+    snapshot => { snapshot.urls['unknown.png'] = url('bad'); },
+    snapshot => { delete snapshot.urls['image-2.png']; },
+    snapshot => { snapshot.urls['image-1.png'] = 2; },
+    snapshot => { snapshot.urls['image-1.png'] = 'a'.repeat(4097); },
+    snapshot => { snapshot.sources[0].extra = true; },
+    snapshot => { snapshot.sources[0].sectionId = 'unknown'; },
+    snapshot => { snapshot.sources.push({ ...snapshot.sources[0] }); },
+    snapshot => { snapshot.sources[0].html = 'x'.repeat(2 * 1024 * 1024 + 1); },
+    snapshot => { snapshot.sources[0].pageUrl = 'x'.repeat(4097); },
+    snapshot => { snapshot.orders[0].sectionId = 'text'; },
+    snapshot => { snapshot.orders.push(structuredClone(snapshot.orders[0])); },
+    snapshot => { snapshot.orders[0].images[0].url = 'javascript:alert(1)'; },
+    snapshot => { snapshot.orders[0].images[0].url = 'https://user:password@school.test/a.png'; },
+    snapshot => { snapshot.orders[0].images[1].index = 1; },
+    snapshot => { snapshot.orders[0].images[1].url = snapshot.orders[0].images[0].url; },
+    snapshot => { snapshot.orders[0].images[0].extra = 'unknown'; },
+    snapshot => { snapshot.orders[0].pendingFilenames.push('image-1.png'); },
+    snapshot => { snapshot.orders[0].pendingFilenames = ['image-2.png']; },
+    snapshot => { snapshot.orders[0].confirmed = true; },
+    snapshot => { snapshot.orders[0].pendingFilenames = []; },
+    snapshot => { snapshot.orders[0].rows[0].existingUrl = 'different address'; },
+    snapshot => { snapshot.orders[0].rows[1].selection = '1'; },
+  ];
+  for (const mutate of invalid) {
+    const snapshot = structuredClone(valid); mutate(snapshot);
+    const before = f.mapping.getRevision();
+    const nodes = [...f.byId('image-order-list').children];
+    assert.throws(() => f.mapping.restoreState(snapshot));
+    assert.equal(f.mapping.getRevision(), before);
+    assert.deepEqual(f.mapping.exportState(), valid);
+    assert.deepEqual(f.byId('image-order-list').children, nodes);
+    assert.equal(f.byId('copy-mapped').disabled, true);
+  }
+});
+
+test('confirmed saved order must agree with filled safe global addresses', async t => {
+  const f = fixture(t);
+  await f.importReport(orderReport([1, 3])); await f.byId('confirm-image-order').fire('click');
+  const valid = f.mapping.exportState();
+  for (const address of ['', 'unfinished', 'javascript:alert(1)', url('different'), '\n' + url(1)]) {
+    const saved = structuredClone(valid); saved.urls['image-1.png'] = address;
+    saved.orders[0].rows[0].existingUrl = address; saved.orders[0].rows[0].keepUrl = '';
+    assert.throws(() => f.mapping.validateState(saved, f.current));
+  }
+});
+
+test('restore allows unfinished unsafe manual text only in inputs, never as selectable school image links', async t => {
+  const f = fixture(t);
+  await f.setUrl(1, 'javascript:unfinished');
+  f.byId('school-page-url').value = 'file:///unfinished-page';
+  const snapshot = f.mapping.exportState();
+  f.replaceCurrent({ ...f.current, jobId: 'unsafe-input-text' }); f.mapping.restoreState(snapshot);
+  assert.equal(f.assetInputs.get('image-1.png').value, 'javascript:unfinished');
+  assert.equal(f.byId('school-page-url').value, 'file:///unfinished-page');
+  assert.equal(f.byId('copy-mapped').disabled, true);
+  assert.equal(f.byId('download-mapped').disabled, true);
+  assert.equal(f.requests.length, 0);
+});
+
+test('unfinished manual control characters also survive inside an unconfirmed retained row', async t => {
+  const f = fixture(t);
+  const unfinished = '\n' + url(1);
+  await f.setUrl(1, unfinished);
+  await f.importReport(orderReport([1, 3]));
+  const saved = f.mapping.exportState();
+  assert.equal(saved.orders[0].confirmed, false);
+  assert.equal(saved.orders[0].rows[0].keepUrl, unfinished);
+  f.replaceCurrent({ ...f.current, jobId: 'raw-retained' }); f.mapping.restoreState(saved);
+  assert.equal(f.assetInputs.get('image-1.png').value, unfinished);
+  const row = f.byId('image-order-list').children[0];
+  assert.equal(row.children[1].children[1].children[0].value, 'keep');
+  assert.equal(row.children[1].children[3].hidden, true, 'invalid retained value is never a school image link');
+  assert.equal(f.byId('copy-mapped').disabled, true);
+  assert.equal(f.byId('confirm-image-order').disabled, true);
+});
+
+test('text-only work progress has an empty mapping and restores a directly copyable field', t => {
+  const f = fixture(t);
+  const textResult = { ...f.current, assets: [], sections: f.current.sections.map(section => ({ ...section, assetFilenames: [] })) };
+  f.replaceCurrent(textResult); f.choose('text');
+  const saved = f.mapping.exportState();
+  assert.deepEqual(saved.urls, {});
+  assert.deepEqual(saved.orders, []);
+  f.mapping.restoreState(saved);
+  assert.equal(f.byId('copy-mapped').disabled, false);
+  assert.equal(f.byId('download-upload-images').disabled, true);
+  assert.equal(f.requests.length, 0);
+});
+
+test('restoring progress invalidates imports already in flight even in the same scope', async t => {
+  const f = fixture(t); const pending = deferred();
+  const saved = f.mapping.exportState();
+  f.byId('school-image-source').value = '<p>in-flight source</p>';
+  f.respond(() => pending.promise);
+  const importing = f.byId('import-image-urls').fire('click');
+  f.mapping.restoreState(saved);
+  pending.resolve(new Response(JSON.stringify(orderReport([1, 3])))); await importing;
+  assert.equal(f.byId('image-order-confirmation').hidden, true);
+  assert.equal(f.assetInputs.get('image-1.png').value, '');
+  assert.equal(f.byId('school-image-source').value, '');
+});
+
+test('restoring progress invalidates mapped exports already in flight and clears cached mapped HTML', async t => {
+  const f = fixture(t); const pending = deferred();
+  await f.setUrl(1, url(1)); await f.setUrl(3, url(3));
+  const saved = f.mapping.exportState();
+  f.respond(() => pending.promise);
+  const copying = f.byId('copy-mapped').fire('click');
+  f.mapping.restoreState(saved);
+  pending.resolve(new Response(JSON.stringify({ section: { ...f.current.sections[0], fragment: '<p>stale mapped</p>' } }))); await copying;
+  assert.deepEqual(f.copied, []);
+  assert.equal(f.view.snapshot().mapped, false);
+});
+
+test('applying an import result increments revision so asynchronous saved snapshots cannot become stale unnoticed', async t => {
+  const f = fixture(t); const pending = deferred();
+  f.byId('school-image-source').value = '<p>new school images</p>';
+  f.respond(() => pending.promise);
+  const importing = f.byId('import-image-urls').fire('click');
+  const duringImport = f.mapping.getRevision();
+  pending.resolve(new Response(JSON.stringify(orderReport([1, 3])))); await importing;
+  assert.ok(f.mapping.getRevision() > duringImport);
+});

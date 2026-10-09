@@ -131,7 +131,7 @@ export function createServer() {
       if (request.headers.origin && ![`http://${authority}`, `https://${authority}`].includes(request.headers.origin)) return reply(response, 403, { error: '请求来源不匹配。' });
       const url = new URL(request.url, `http://${authority}`);
       if (request.method === 'GET' && url.pathname === '/favicon.ico') { response.writeHead(204); response.end(); return; }
-      if (request.method === 'GET' && ['/', '/app.js', '/image-mapping.js', '/image-order.js', '/job-recovery.js', '/section-view.js', '/style.css'].includes(url.pathname)) {
+      if (request.method === 'GET' && ['/', '/app.js', '/image-mapping.js', '/image-order.js', '/job-recovery.js', '/section-view.js', '/site-visits.js', '/progress-actions.js', '/work-progress.js', '/style.css'].includes(url.pathname)) {
         const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
         const type = name.endsWith('.js') ? 'text/javascript; charset=utf-8' : name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/html; charset=utf-8';
         return reply(response, 200, await readFile(`${publicRoot}${name}`), type);

@@ -207,9 +207,13 @@ export function createBrowserApi({ convert, onProgress, demoUrl, progressDemoUrl
     for (const [id, job] of jobs) if (Date.now() - job.time >= JOB_TTL) releaseJob(id);
   }
 
-  function remember(result) {
+  function remember(result, preserveJobId) {
     prune();
-    while (jobs.size >= 3) releaseJob(jobs.keys().next().value);
+    // A restore candidate must not evict the currently displayed document before
+    // its identity and work state are checked. Protection applies only here;
+    // expiry, later ordinary conversions and explicit cleanup remain unchanged.
+    const retained = typeof preserveJobId === 'string' && jobs.has(preserveJobId) ? preserveJobId : undefined;
+    while (jobs.size >= 3) releaseJob([...jobs.keys()].find(id => id !== retained));
     const id = crypto.randomUUID();
     const urls = new Map();
     for (const asset of result.assets) urls.set(asset.filename, URL.createObjectURL(new Blob([asset.data], { type: asset.mime })));
@@ -279,6 +283,7 @@ export function createBrowserApi({ convert, onProgress, demoUrl, progressDemoUrl
         if (converting) return reply(409, { error: '正在转换另一个文档，请稍后再试。' });
         converting = true;
         try {
+          const preserveJobId = init.preserveJobId;
           const documentType = validateDocumentType(url.searchParams.get('documentType') ?? 'application');
           const fontMode = url.searchParams.get('fontMode') ?? 'uniform';
           const fontSize = Number(url.searchParams.get('fontSize') || 16);
@@ -294,7 +299,7 @@ export function createBrowserApi({ convert, onProgress, demoUrl, progressDemoUrl
           const result = validateResult(await convert(document, { documentType, fontMode, fontSize, scale, formulaFormat: 'mathml' }));
           signal?.throwIfAborted();
           if (disposed) throw new Error('本地处理已关闭，请刷新页面。');
-          const jobId = remember(result);
+          const jobId = remember(result, preserveJobId);
           reportProgress({ stage: 'convert', percent: 100, message: '本地转换完成。' });
           return reply(200, { jobId, fragment: result.fragment, preview: result.preview, manifest: result.manifest,
             assets: summaries(result, jobId), sections: result.sections });

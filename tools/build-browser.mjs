@@ -17,25 +17,18 @@ const replaceOnce = (text, from, to, name) => {
 const browserUi = {
   name: 'campus-browser-ui',
   setup(builder) {
-    builder.onResolve({ filter: /^\/(?:image-mapping|job-recovery|section-view|image-order|site-visits)\.js$/ }, args => ({ path: path.join(root, 'public', args.path.slice(1)) }));
+    builder.onResolve({ filter: /^\/(?:image-mapping|job-recovery|section-view|image-order|site-visits|progress-actions)\.js$/ }, args => ({ path: path.join(root, 'public', args.path.slice(1)) }));
     builder.onResolve({ filter: /^cheerio$/ }, () => ({ path: path.join(root, 'browser', 'html.js') }));
     builder.onLoad({ filter: /[\\/]public[\\/](?:app|image-mapping)\.js$/ }, async args => {
       let text = (await readFile(args.path, 'utf8')).replaceAll('\r\n', '\n');
       if (args.path.endsWith('app.js')) {
-        text = `import {localRequest, assetUrl} from '../browser/client.js';\nlet browserUiBusy = false;\n${text}`;
+        text = `import {localRequest, assetUrl} from '../browser/client.js';\n${text}`;
         text = text.replace(/\bfetch\(/g, 'localRequest(');
-        text = replaceOnce(text, 'async function convert(input) {', "async function convert(input, reserved = false) {\n  if (browserUiBusy && !reserved) return status('正在转换，请等待完成或先取消。', true);\n  browserUiBusy = true;", 'conversion guard');
-        text = replaceOnce(text,
-          "byId('demo').addEventListener('click', async () => {\n  if (byId('convert').disabled) return;\n  byId('convert').disabled = true; byId('demo').disabled = true;\n  byId('document-type').disabled = true;\n  try { const response = await localRequest(demoRequestUrl()); if (!response.ok) throw new Error('示例读取失败。'); await convert(await response.blob()); }\n  catch (error) { status(error.message, true); }\n  finally { byId('convert').disabled = false; byId('demo').disabled = false; byId('document-type').disabled = false; }\n});",
-          "byId('demo').addEventListener('click', async () => {\n  if (browserUiBusy) return;\n  browserUiBusy = true;\n  byId('convert').disabled = true; byId('demo').disabled = true; byId('file').disabled = true; byId('document-type').disabled = true;\n  try { const response = await localRequest(demoRequestUrl()); if (!response.ok) throw new Error('示例读取失败。'); await convert(await response.blob(), true); }\n  catch (error) { status(error.message, true); }\n  finally { browserUiBusy = false; byId('convert').disabled = false; byId('demo').disabled = false; byId('file').disabled = false; byId('document-type').disabled = false; }\n});", 'demo reservation');
         text = replaceOnce(text, 'getCurrent: () => current,\n', 'getCurrent: () => current,\n  fetchRequest: localRequest,\n', 'recovery transport');
         text = replaceOnce(text,
           "const source = image.getAttribute('src');\n      if (source?.startsWith('/api/assets/')) image.src = source.replace(/^\\/api\\/assets\\/[a-f\\d-]{36}\\//, `/api/assets/${result.jobId}/`);",
           "if (image.dataset.assetFilename) image.src = assetUrl(result.jobId, image.dataset.assetFilename);", 'recovered asset URLs');
         text = replaceOnce(text, 'image.src = `/api/assets/${result.jobId}/${encodeURIComponent(asset.filename)}`;', 'image.dataset.assetFilename = asset.filename; image.src = assetUrl(result.jobId, asset.filename);', 'asset URLs');
-        text = replaceOnce(text, "byId('convert').disabled = true; byId('demo').disabled = true;", "byId('convert').disabled = true; byId('demo').disabled = true; byId('file').disabled = true;", 'file lock');
-        text = replaceOnce(text, "finally { byId('convert').disabled = false; byId('demo').disabled = false; byId('document-type').disabled = false; }", "finally { browserUiBusy = false; byId('convert').disabled = false; byId('demo').disabled = false; byId('file').disabled = false; byId('document-type').disabled = false; }", 'file unlock');
-        text = replaceOnce(text, 'function selectFiles(files) {', "function selectFiles(files) {\n  if (byId('convert').disabled) return status('正在转换，请等待完成或先取消，再选择新文件。', true);", 'drop lock');
       } else {
         text = `import {assetUrl} from '../browser/client.js';\n${text}`;
         text = replaceOnce(text, 'image.src = `/api/assets/${current.jobId}/${encodeURIComponent(entry.filename)}`;', 'image.dataset.assetFilename = entry.filename; image.src = assetUrl(current.jobId, entry.filename);', 'order asset URLs');

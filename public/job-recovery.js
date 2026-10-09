@@ -8,7 +8,7 @@ function canonical(value) {
   return value;
 }
 
-function identity(result) {
+export function conversionIdentity(result) {
   return JSON.stringify(canonical({
     fragment: result.fragment,
     assets: result.assets.map(asset => Object.fromEntries(ASSET_FIELDS.map(field => [field, asset[field]]))),
@@ -31,7 +31,7 @@ export function createJobRecovery({ getCurrent, fetchRequest = fetch, onRecoveri
   let generation = 0;
 
   function remember(result, input, params) {
-    active = { result, input, params: new URLSearchParams(params).toString(), identity: identity(result), generation: ++generation };
+    active = { result, input, params: new URLSearchParams(params).toString(), identity: conversionIdentity(result), generation: ++generation };
   }
 
   function clear() { active = undefined; generation++; }
@@ -56,7 +56,7 @@ export function createJobRecovery({ getCurrent, fetchRequest = fetch, onRecoveri
       if (!response.ok) throw new Error(restored?.error || '本地转换恢复失败，请保留学校源码后重试。');
       if (!restored || !Array.isArray(restored.assets) || !restored.manifest
         || typeof restored.jobId !== 'string' || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(restored.jobId)
-        || identity(restored) !== session.identity) {
+        || conversionIdentity(restored) !== session.identity) {
         throw new Error('恢复后的正文、公式或图片与原转换不一致，已停止操作。粘贴的学校源码和图片地址仍保留。');
       }
       const previousJobId = session.result.jobId;
@@ -94,5 +94,10 @@ export function createJobRecovery({ getCurrent, fetchRequest = fetch, onRecoveri
     return retried;
   }
 
-  return { remember, clear, request };
+  function getInput() {
+    assertActive(active);
+    return { input: active.input, params: active.params };
+  }
+
+  return { remember, clear, request, getInput };
 }

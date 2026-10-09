@@ -254,3 +254,52 @@ test('retained manual shared edits remain visible and invalid addresses cannot b
   assert.throws(() => model.retainMappings([{ filename: 'missing.png', url: images[0].url }]), /已填图片地址无效/);
   assert.equal(model.rows()[1].url, images[1].url);
 });
+
+test('saved image selection restores swaps, retained choices and unfinished rows exactly', () => {
+  const manual = 'unfinished school address';
+  const original = create({ [assets[0].filename]: manual });
+  original.select(assets[0].filename, '2');
+  original.select(assets[2].filename, '9');
+  const saved = original.exportState();
+  const restored = create({ [assets[0].filename]: manual });
+  restored.restoreState(saved);
+  assert.deepEqual(restored.rows(), original.rows());
+  assert.equal(restored.validate().valid, false, 'empty displaced row still requires a selection');
+  saved[0].selection = 'keep';
+  assert.equal(restored.rows()[0].selection, '2', 'restored state does not retain caller references');
+  restored.select(assets[1].filename, '1');
+  assert.equal(restored.validate().valid, true);
+});
+
+test('image-order state validation rejects malformed or duplicate rows without mutating choices', () => {
+  const model = create();
+  const original = model.exportState();
+  const invalid = [
+    null, original.slice(1),
+    original.map((row, index) => index ? row : { ...row, filename: 'unknown.png' }),
+    original.map((row, index) => index ? row : { ...row, extra: 'unknown' }),
+    original.map((row, index) => index ? row : { ...row, selection: '01' }),
+    original.map((row, index) => index ? row : { ...row, selection: 'keep' }),
+    original.map((row, index) => index ? row : { ...row, existingUrl: 1 }),
+    original.map((row, index) => index ? row : { ...row, existingUrl: 'a'.repeat(4097) }),
+    original.map((row, index) => index ? row : { ...row, keepUrl: 'different url' }),
+    original.map((row, index) => index === 1 ? { ...row, filename: assets[0].filename } : row),
+    original.map((row, index) => index === 1 ? { ...row, selection: '1' } : row),
+  ];
+  for (const snapshot of invalid) {
+    assert.throws(() => model.restoreState(snapshot), /已保存的图片选择/);
+    assert.deepEqual(model.exportState(), original);
+  }
+});
+
+test('image-order restore keeps unresolved shared-address conflicts visible and invalid', () => {
+  const model = create();
+  model.select(assets[0].filename, '2');
+  model.retainMappings([{ filename: assets[0].filename, url: images[0].url }]);
+  const restored = create();
+  restored.restoreState(model.exportState());
+  assert.deepEqual(restored.rows(), model.rows());
+  assert.equal(restored.validate().valid, false);
+  restored.select(assets[1].filename, '2');
+  assert.equal(restored.validate().valid, true);
+});
