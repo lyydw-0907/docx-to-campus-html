@@ -23,7 +23,7 @@ const jobRecovery = createJobRecovery({
     status('本地转换记录已恢复，继续处理已粘贴的源码和图片地址。');
   },
 });
-const requestJob = (route, init) => jobRecovery.request(route, init);
+const requestJob = (route, init, query) => jobRecovery.request(route, init, query);
 const imageMapping = createImageMapping({ getCurrent: () => current, assetInputs, byId, json, download, status, showMappedSource, resetMappedSource, requestJob,
   getCopyContext: () => sectionView.token(), isCopyContextCurrent: token => sectionView.matches(token),
   getCopyState: () => {
@@ -68,7 +68,7 @@ function renderSelectedSection() {
   let note;
   if (selected.empty) note = '此栏目没有正文内容，请检查 Word。';
   else if (selected.kind === 'unassigned') note = (selected.needsMapping
-    ? '此片段含图片，请先完成图片地址对应，再替换并复制。'
+    ? '此片段含图片，只需完成本片段的图片地址对应，再替换并复制。'
     : `${selected.mapped && selected.assetFilenames.length ? '图片地址已替换。' : ''}可单独复制“${selected.title}”正文，保留原标题和格式。`)
     + '对应的学校栏目尚未确定，粘贴位置请自行选择。';
   else if (selected.kind === 'whole' && current.sections?.length) note = (selected.needsMapping
@@ -76,7 +76,7 @@ function renderSelectedSection() {
     : `${selected.mapped && selected.assetFilenames.length ? '图片地址已替换。' : ''}可复制整篇 HTML。`)
     + '整篇保留封面、所有栏目及待分配内容。学校分栏目填写时，可切换到对应栏目分别复制。';
   else note = selected.needsMapping
-    ? `${nativeMath ? '原生公式无需上传。' : ''}此栏目含嵌入图片，需在下方完成图片地址对应，再替换并复制本栏目。`
+    ? `${nativeMath ? '原生公式无需上传。' : ''}只需在下方完成本栏目的 ${selected.assetFilenames.length} 张图片地址对应，即可复制；其他栏目的图片可稍后处理。`
     : `${selected.mapped && selected.assetFilenames.length ? '图片地址已替换。' : nativeMath ? '原生公式无需上传图片。' : ''}可复制此正文到学校${selected.kind === 'field' ? `“${selected.title}”` : ''}编辑框的源码模式；粘贴后仍需检查保存效果。`;
   byId('source-note').textContent = note;
   byId('copy').title = note;

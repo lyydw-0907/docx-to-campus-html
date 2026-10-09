@@ -18,6 +18,19 @@ function fixture() {
     sections: [{ id: 'progress', title: '项目进展', kind: 'field', fragment, preview: `<html><body>${fragment}</body></html>`, assetFilenames: ['image-1.png'], formulaCount: 1, imageCount: 1 }],
   };
 }
+
+function scopedFixture() {
+  const assets = ['a', 'b', 'c'].map((letter, offset) => ({ filename: `image-${letter}.png`, mime: 'image/png', kind: 'image', width: 64, height: 32, data: Uint8Array.of(offset + 1, 2, 3, 4) }));
+  const image = index => `<img src="data:image/png;base64,${btoa(String.fromCharCode(...assets[index].data))}" width="64" height="32">`;
+  const sections = [
+    { id: 'first-field', title: '合成栏目一', kind: 'field', fragment: `<p>${image(0)}${image(1)}${math}</p>`, assetFilenames: ['image-a.png', 'image-b.png'], formulaCount: 1, imageCount: 2 },
+    { id: 'second-field', title: '合成栏目二', kind: 'field', fragment: `<p>${image(2)}</p>`, assetFilenames: ['image-c.png'], formulaCount: 0, imageCount: 1 },
+    { id: 'text-field', title: '合成文字栏目', kind: 'field', fragment: `<p>仅有文字 ${math}</p>`, assetFilenames: [], formulaCount: 1, imageCount: 0 },
+    { id: 'unassigned-1', title: '合成附图', kind: 'unassigned', fragment: `<p>共享图片 ${image(0)}</p>`, assetFilenames: ['image-a.png'], formulaCount: 0, imageCount: 1 },
+  ].map(section => ({ ...section, preview: `<!doctype html><html><body>${section.fragment}</body></html>` }));
+  const fragment = sections.map(section => section.fragment).join('\n');
+  return { assets, sections, fragment, preview: `<!doctype html><html><body>${fragment}</body></html>`, manifest: { formulas: [{}, {}], warnings: [], options: { formulaFormat: 'mathml', imageMode: 'embedded' } } };
+}
 const post = data => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 async function start(api) {
   const response = await api.request('/api/convert?formulaFormat=mathml', { method: 'POST', body: new Blob([Uint8Array.of(9)]) });
@@ -112,6 +125,93 @@ test('mapped section copy preserves local previews, math characters, annotations
     assert.equal((await api.request(`/api/export/${result.jobId}`, post({ mode: 'mapped', format: 'json', sectionId: 'missing', urls: { 'image-1.png': 'https://school.example/image.png' } }))).status, 400);
     assert.equal((await api.request(`/api/export/${result.jobId}`, post({ mode: 'mapped', format: 'json', sectionId: 'progress', urls: {} }))).status, 400);
   } finally { api.dispose(); }
+});
+
+test('scoped browser copy permits independent field progress and still requires every image for whole exports', async () => {
+  const api = createBrowserApi({ convert: async () => scopedFixture() });
+  try {
+    const result = await start(api);
+    const urls = { 'image-a.png': 'https://school.example/a.png', 'image-b.png': 'https://school.example/b.png' };
+    const request = options => api.request(`/api/export/${result.jobId}`, post({ mode: 'mapped', format: 'json', ...options }));
+    const copied = await request({ sectionId: 'first-field', urls: { ...urls, 'image-c.png': 'javascript:alert(1)' } });
+    assert.equal(copied.status, 200);
+    const section = (await copied.json()).section;
+    assert.deepEqual(section.assetFilenames, ['image-a.png', 'image-b.png']);
+    assert.equal(load(section.fragment, null, false)('img').length, 2);
+    assert.equal(load(section.fragment, null, false)('annotation').text(), 'x-1');
+    assert.equal((await request({ sectionId: 'second-field', urls })).status, 400);
+    for (const sectionId of ['whole', undefined]) assert.equal((await request({ sectionId, urls })).status, 400);
+    assert.equal((await api.request(`/api/export/${result.jobId}`, post({ mode: 'mapped', urls }))).status, 400);
+    assert.equal((await request({ sectionId: 'text-field', urls: {} })).status, 200);
+    assert.equal((await request({ sectionId: 'unassigned-1', urls: { 'image-a.png': urls['image-a.png'] } })).status, 200);
+    for (const invalidUrls of [
+      { 'image-a.png': urls['image-a.png'] },
+      { ...urls, 'image-b.png': 'javascript:alert(1)' },
+      { 'image-a.png': 'https://SCHOOL.EXAMPLE:443/same.png', 'image-b.png': 'https://school.example/same.png' },
+    ]) assert.equal((await request({ sectionId: 'first-field', urls: invalidUrls })).status, 400);
+    for (const sectionId of ['', 'missing', null, 1, []]) assert.equal((await request({ sectionId, urls })).status, 400);
+    const complete = { ...urls, 'image-c.png': 'https://school.example/c.png' };
+    assert.equal((await request({ sectionId: 'whole', urls: complete })).status, 200);
+    assert.equal((await api.request(`/api/export/${result.jobId}`, post({ mode: 'mapped', urls: complete }))).status, 200);
+  } finally { api.dispose(); }
+});
+
+test('scoped browser import and image ZIP use only trusted field images and retain document-wide upload numbers', async () => {
+  const original = scopedFixture();
+  const api = createBrowserApi({ convert: async () => original });
+  try {
+    const result = await start(api);
+    const html = '<img src="https://school.example/upload/03-image-c.png">';
+    const importedResponse = await api.request(`/api/import-images/${result.jobId}`, post({ html, sectionId: 'second-field', assetFilenames: ['image-a.png'] }));
+    assert.equal(importedResponse.status, 200);
+    const imported = await importedResponse.json();
+    assert.equal(imported.sectionId, 'second-field');
+    assert.deepEqual(imported.assetFilenames, ['image-c.png']);
+    assert.deepEqual(imported.matches, [{ filename: 'image-c.png', url: 'https://school.example/upload/03-image-c.png', method: 'uploadFilename' }]);
+    assert.deepEqual(imported.unmatchedAssets, []);
+    for (const sectionId of ['first-field', 'second-field', 'unassigned-1', 'whole', undefined]) {
+      const suffix = sectionId === undefined ? '' : `?sectionId=${sectionId}`;
+      const response = await api.request(`/api/upload-images/${result.jobId}${suffix}`);
+      assert.equal(response.status, 200);
+      const zip = await JSZip.loadAsync(await response.arrayBuffer(), { checkCRC32: true });
+      const names = Object.keys(zip.files).filter(name => name.endsWith('.png'));
+      const indexes = sectionId === 'first-field' ? [0, 1] : sectionId === 'second-field' ? [2] : sectionId === 'unassigned-1' ? [0] : [0, 1, 2];
+      const expected = indexes.map(index => result.assets[index].uploadFilename);
+      assert.deepEqual(names, expected);
+      for (const index of indexes) assert.deepEqual([...await zip.file(result.assets[index].uploadFilename).async('uint8array')], [...original.assets[index].data]);
+      const instructions = await zip.file('上传顺序.txt').async('string');
+      for (const name of expected) assert.ok(instructions.includes(name));
+      for (const asset of result.assets.filter(asset => !expected.includes(asset.uploadFilename))) assert.ok(!instructions.includes(asset.uploadFilename));
+    }
+    const allImport = await api.request(`/api/import-images/${result.jobId}`, post({ html }));
+    assert.deepEqual((await allImport.json()).unmatchedAssets, ['image-a.png', 'image-b.png']);
+    for (const value of ['', 'unknown', null, 42, []]) {
+      assert.equal((await api.request(`/api/import-images/${result.jobId}`, post({ html, sectionId: value }))).status, 400);
+      if (typeof value === 'string') assert.equal((await api.request(`/api/upload-images/${result.jobId}?sectionId=${value}`)).status, 400);
+    }
+    const noImages = await api.request(`/api/upload-images/${result.jobId}?sectionId=text-field`);
+    assert.equal(noImages.status, 400);
+    assert.match((await noImages.json()).error, /不含图片/);
+  } finally { api.dispose(); }
+});
+
+test('browser scoped routes reject corrupt trusted asset lists instead of silently ignoring them', async () => {
+  for (const assetFilenames of [undefined, null, ['missing.png'], ['image-a.png', 'image-a.png'], [1]]) {
+    const original = scopedFixture(); original.sections[0].assetFilenames = assetFilenames;
+    const api = createBrowserApi({ convert: async () => original });
+    try {
+      const result = await start(api);
+      const urls = { 'image-a.png': 'https://school.example/a.png', 'image-b.png': 'https://school.example/b.png' };
+      for (const response of [
+        await api.request(`/api/import-images/${result.jobId}`, post({ html: '<img src="https://school.example/a.png">', sectionId: 'first-field' })),
+        await api.request(`/api/upload-images/${result.jobId}?sectionId=first-field`),
+        await api.request(`/api/export/${result.jobId}`, post({ mode: 'mapped', format: 'json', sectionId: 'first-field', urls })),
+      ]) {
+        assert.equal(response.status, 400);
+        assert.match((await response.json()).error, /栏目图片与转换清单不一致/);
+      }
+    } finally { api.dispose(); }
+  }
 });
 
 test('ZIP exports include original assets, complete HTML and independently indexed section bodies', async () => {

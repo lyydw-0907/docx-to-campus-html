@@ -4,10 +4,12 @@ import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import { load } from 'cheerio';
 import { createServer, mapExport, mapSectionCopy } from '../src/server.mjs';
 import { resolvePandocPath } from '../src/convert.mjs';
 import { makeDemoDocx } from '../src/fixtures.mjs';
+import { resolveImageScope } from '../src/image-scope.mjs';
 
 let pandocAvailable = true;
 try { await promisify(execFile)(await resolvePandocPath(), ['--version']); } catch { pandocAvailable = false; }
@@ -63,20 +65,47 @@ test('scoped copy never reads whole-document HTML, other field bodies or any pre
   assert.equal(Object.hasOwn(copied, 'preview'), false);
 });
 
-test('scoped copy validates every asset mapping, including images outside the selected field', () => {
+test('scoped copy validates only its pictures and ignores missing or invalid unrelated mappings', () => {
   const result = sectionResult();
-  assert.throws(() => mapSectionCopy(result, 'research-purpose', {}), /填写图片地址/);
-  assert.throws(() => mapSectionCopy(result, 'research-purpose', { 'image-a.png': urls['image-a.png'] }), /image-b\.png/);
-  assert.throws(() => mapSectionCopy(result, 'research-purpose', { ...urls, 'image-b.png': 'javascript:alert(1)' }));
+  assert.equal(mapSectionCopy(result, 'research-purpose', {}).fragment, result.sections[0].fragment);
+  assert.equal(mapSectionCopy(result, 'research-purpose', { 'image-b.png': 'javascript:alert(1)' }).id, 'research-purpose');
+  const partial = { 'image-a.png': urls['image-a.png'] };
+  assert.equal(load(mapSectionCopy(result, 'research-content', partial).fragment, null, false)('img').attr('src'), partial['image-a.png']);
+  assert.equal(mapSectionCopy(result, 'research-content', { ...partial, 'image-b.png': 'javascript:alert(1)' }).id, 'research-content');
+  assert.throws(() => mapSectionCopy(result, 'schedule', partial), /image-b\.png/);
+  assert.throws(() => mapSectionCopy(result, 'research-content', {}), /image-a\.png/);
+  assert.throws(() => mapSectionCopy(result, 'research-content', { 'image-a.png': 'javascript:alert(1)' }));
+  assert.equal(mapSectionCopy(result, 'research-content', {
+    'image-a.png': 'https://SCHOOL.EXAMPLE.TEST:443/same.png', 'image-b.png': 'https://school.example.test/same.png',
+  }).id, 'research-content');
+  result.sections[1].assetFilenames.push('image-b.png');
   assert.throws(() => mapSectionCopy(result, 'research-content', {
     'image-a.png': 'https://SCHOOL.EXAMPLE.TEST:443/same.png', 'image-b.png': 'https://school.example.test/same.png',
   }), /图片地址重复/);
   assert.equal(mapSectionCopy(result, 'research-purpose', urls).id, 'research-purpose');
 });
 
+test('trusted scope resolver rejects malformed metadata and allows one shared asset in different fields', () => {
+  const result = sectionResult();
+  const section = result.sections[1];
+  result.sections[2].assetFilenames = [...section.assetFilenames];
+  for (const id of [section.id, result.sections[2].id]) assert.deepEqual(resolveImageScope(result, id).assets, [result.assets[0]]);
+  assert.deepEqual(resolveImageScope(result).assetFilenames, ['image-a.png', 'image-b.png']);
+  assert.deepEqual(resolveImageScope(result, 'whole').assetFilenames, ['image-a.png', 'image-b.png']);
+  for (const value of [undefined, null, {}, ['missing.png'], ['image-a.png', 'image-a.png'], [1]]) {
+    section.assetFilenames = value;
+    assert.throws(() => resolveImageScope(result, section.id), /栏目图片与转换清单不一致/);
+  }
+  section.assetFilenames = ['image-a.png'];
+  result.sections.push({ ...section });
+  assert.throws(() => resolveImageScope(result, section.id), /栏目图片与转换清单不一致/);
+  result.sections.pop(); result.assets.push({ ...result.assets[0] });
+  assert.throws(() => resolveImageScope(result, section.id), /栏目图片与转换清单不一致/);
+});
+
 test('scoped copy refuses unknown and empty fields', () => {
   const result = sectionResult();
-  for (const id of ['whole-check', 'unknown']) assert.throws(() => mapSectionCopy(result, id, urls), /不是可复制/);
+  for (const id of ['whole-check', 'unknown']) assert.throws(() => mapSectionCopy(result, id, urls), /栏目不存在/);
   for (const id of [undefined, null, 1, [], {}, '']) assert.throws(() => mapSectionCopy(result, id, urls), /复制栏目标识无效/);
   assert.throws(() => mapSectionCopy(result, 'expected-results', urls), /没有正文/);
   result.sections[4].fragment = '<math><mi>x</mi></math>';
@@ -102,7 +131,7 @@ test('legacy documents without sections support scoped whole-body copy without p
   assert.equal(mapped.kind, 'whole');
   assert.equal(Object.hasOwn(mapped, 'preview'), false);
   assert.equal(Object.hasOwn(mapped, 'manifest'), false);
-  assert.throws(() => mapSectionCopy(result, 'research-purpose', urls), /不是可复制/);
+  assert.throws(() => mapSectionCopy(result, 'research-purpose', urls), /栏目不存在/);
   result.fragment = '<p>&nbsp;</p>';
   assert.throws(() => mapSectionCopy(result, 'whole', urls), /没有正文/);
 });
@@ -196,16 +225,16 @@ test('unassigned body-only copy does not read whole HTML, another section body o
   assert.equal(mapSectionCopy(result, original.id, urls).fragment, expected);
 });
 
-test('image-bearing unassigned copy uses the same complete-image validation and preserves source dimensions', () => {
+test('image-bearing unassigned copy validates its shared image and preserves source dimensions', () => {
   const result = sectionResult(); const original = result.sections[3];
   original.fragment = `<h2>附加材料</h2>${result.sections[1].fragment}`;
   original.assetFilenames = [result.assets[0].filename]; original.formulaCount = 1; original.imageCount = 1;
   assert.throws(() => mapSectionCopy(result, original.id, {}), /填写图片地址/);
-  assert.throws(() => mapSectionCopy(result, original.id, { 'image-a.png': urls['image-a.png'] }), /image-b\.png/);
-  assert.throws(() => mapSectionCopy(result, original.id, { ...urls, 'image-b.png': 'javascript:alert(1)' }));
-  assert.throws(() => mapSectionCopy(result, original.id, {
+  assert.equal(mapSectionCopy(result, original.id, { 'image-a.png': urls['image-a.png'] }).id, original.id);
+  assert.equal(mapSectionCopy(result, original.id, { ...urls, 'image-b.png': 'javascript:alert(1)' }).id, original.id);
+  assert.equal(mapSectionCopy(result, original.id, {
     'image-a.png': 'https://SCHOOL.EXAMPLE.TEST:443/same.png', 'image-b.png': 'https://school.example.test/same.png',
-  }), /图片地址重复/);
+  }).id, original.id);
   const copied = mapSectionCopy(result, original.id, urls);
   const { preview, ...expected } = mapExport(result, 'mapped', urls).sections[3];
   assert.deepEqual(copied, expected);
@@ -223,7 +252,7 @@ test('empty unassigned sources and unsupported registered kinds stay unavailable
   original.fragment = '<div> \n&nbsp;&#160;</div>';
   assert.throws(() => mapSectionCopy(result, original.id, urls), /没有正文/);
   result.sections.push({ ...original, id: 'unknown-kind', kind: 'unexpected', fragment: '<p>unsupported content</p>' });
-  assert.throws(() => mapSectionCopy(result, 'unknown-kind', urls), /不是可复制/);
+  assert.throws(() => mapSectionCopy(result, 'unknown-kind', urls), /栏目不存在/);
 });
 
 async function sectionedDocx() {
@@ -236,6 +265,80 @@ async function sectionedDocx() {
   zip.file('word/document.xml', document);
   return zip.generateAsync({ type: 'nodebuffer' });
 }
+
+async function multiImageDocx() {
+  const zip = await JSZip.loadAsync(await sectionedDocx());
+  const heading = text => `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const source = await zip.file('word/document.xml').async('string');
+  const imageParagraph = source.match(/<w:p><w:r><w:drawing>[\s\S]*?<\/w:drawing><\/w:r><\/w:p>/)[0];
+  const extra = imageParagraph.replaceAll('rIdImage', 'rIdImage2').replace('wp:docPr id="1"', 'wp:docPr id="2"');
+  zip.file('word/document.xml', source.replace(heading('参考文献'), `${heading('项目研究进度安排')}${extra}${heading('参考文献')}`));
+  const relations = await zip.file('word/_rels/document.xml.rels').async('string');
+  zip.file('word/_rels/document.xml.rels', relations.replace('</Relationships>', '<Relationship Id="rIdImage2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/demo2.png"/></Relationships>'));
+  zip.file('word/media/demo2.png', await sharp(await zip.file('word/media/demo.png').async('nodebuffer')).negate().png().toBuffer());
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+test('HTTP scoped import, upload and copy allow one imaged field before preparing the rest', requiresPandoc, async () => {
+  const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const converted = await fetch(`${base}/api/convert?formulaFormat=mathml`, { method: 'POST', body: await multiImageDocx() });
+    assert.equal(converted.status, 200);
+    const result = await converted.json();
+    assert.equal(result.assets.length, 2);
+    const content = result.sections.find(section => section.id === 'research-content');
+    const schedule = result.sections.find(section => section.id === 'schedule');
+    assert.equal(content.assetFilenames.length, 1); assert.equal(schedule.assetFilenames.length, 1);
+    assert.notEqual(content.assetFilenames[0], schedule.assetFilenames[0]);
+    const contentAsset = result.assets.find(asset => asset.filename === content.assetFilenames[0]);
+    const scheduleAsset = result.assets.find(asset => asset.filename === schedule.assetFilenames[0]);
+    assert.match(scheduleAsset.uploadFilename, /^02-/);
+    const post = (route, data) => fetch(`${base}/api/${route}/${result.jobId}`, { method: 'POST', body: JSON.stringify(data) });
+    const partialUrls = { [contentAsset.filename]: 'https://school.example.test/content.png' };
+    const options = sectionId => ({ mode: 'mapped', format: 'json', sectionId, urls: partialUrls });
+    assert.equal((await post('export', options('research-content'))).status, 200);
+    assert.equal((await post('export', { ...options('research-content'), urls: { ...partialUrls, [scheduleAsset.filename]: 'javascript:alert(1)' } })).status, 200);
+    assert.equal((await post('export', options('schedule'))).status, 400);
+    assert.equal((await post('export', options('whole'))).status, 400);
+    assert.equal((await post('export', { mode: 'mapped', urls: partialUrls })).status, 400);
+    assert.equal((await post('export', { ...options('research-purpose'), urls: {} })).status, 200);
+    assert.equal((await post('export', { ...options('unassigned-1'), urls: {} })).status, 200);
+    const html = `<img src="https://school.example.test/upload/${scheduleAsset.uploadFilename}">`;
+    const importedResponse = await post('import-images', { html, sectionId: 'schedule', assetFilenames: [contentAsset.filename] });
+    assert.equal(importedResponse.status, 200);
+    const imported = await importedResponse.json();
+    assert.equal(imported.sectionId, 'schedule');
+    assert.deepEqual(imported.assetFilenames, schedule.assetFilenames);
+    assert.deepEqual(imported.matches, [{ filename: scheduleAsset.filename, url: `https://school.example.test/upload/${scheduleAsset.uploadFilename}`, method: 'uploadFilename' }]);
+    assert.deepEqual(imported.unmatchedAssets, []);
+    const allImport = await post('import-images', { html });
+    assert.deepEqual((await allImport.json()).unmatchedAssets, [contentAsset.filename]);
+    for (const sectionId of ['research-content', 'schedule', 'whole', undefined]) {
+      const response = await fetch(`${base}/api/upload-images/${result.jobId}${sectionId === undefined ? '' : `?sectionId=${sectionId}`}`);
+      assert.equal(response.status, 200);
+      const zip = await JSZip.loadAsync(await response.arrayBuffer(), { checkCRC32: true });
+      const expected = sectionId === 'research-content' ? [contentAsset.uploadFilename] : sectionId === 'schedule' ? [scheduleAsset.uploadFilename] : result.assets.map(asset => asset.uploadFilename);
+      assert.deepEqual(Object.keys(zip.files).filter(name => name.endsWith('.png')), expected);
+      for (const name of expected) assert.ok((await zip.file(name).async('uint8array')).length);
+      const instructions = await zip.file('上传顺序.txt').async('string');
+      for (const name of expected) assert.ok(instructions.includes(name));
+      for (const asset of result.assets.filter(asset => !expected.includes(asset.uploadFilename))) assert.ok(!instructions.includes(asset.uploadFilename));
+    }
+    const noImages = await fetch(`${base}/api/upload-images/${result.jobId}?sectionId=research-purpose`);
+    assert.equal(noImages.status, 400); assert.match((await noImages.json()).error, /不含图片/);
+    for (const sectionId of ['', 'unknown', null, [], 1]) {
+      assert.equal((await post('import-images', { html, sectionId })).status, 400);
+      assert.equal((await post('export', { ...options(sectionId) })).status, 400);
+      if (typeof sectionId === 'string') assert.equal((await fetch(`${base}/api/upload-images/${result.jobId}?sectionId=${sectionId}`)).status, 400);
+    }
+    const complete = { ...partialUrls, [scheduleAsset.filename]: 'https://school.example.test/schedule.png' };
+    assert.equal((await post('export', { ...options('whole'), urls: complete })).status, 200);
+    assert.equal((await post('export', { mode: 'mapped', urls: complete })).status, 200);
+    const duplicate = { [contentAsset.filename]: 'https://SCHOOL.EXAMPLE.TEST:443/same.png', [scheduleAsset.filename]: 'https://school.example.test/same.png' };
+    assert.equal((await post('export', { ...options('whole'), urls: duplicate })).status, 400);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
 
 test('HTTP scoped JSON copies fields and unassigned bodies and preserves full JSON and ZIP export', requiresPandoc, async () => {
   const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -288,7 +391,10 @@ test('HTTP scoped JSON copies fields and unassigned bodies and preserves full JS
       assert.equal(response.status, 400);
       assert.ok((await response.json()).error);
     }
-    const missing = await post({ mode: 'mapped', format: 'json', urls: {}, sectionId: 'research-purpose' });
+    const textOnly = await post({ mode: 'mapped', format: 'json', urls: {}, sectionId: 'research-purpose' });
+    assert.equal(textOnly.status, 200);
+    assert.equal((await textOnly.json()).section.id, 'research-purpose');
+    const missing = await post({ mode: 'mapped', format: 'json', urls: {}, sectionId: 'research-content' });
     assert.equal(missing.status, 400);
     assert.match((await missing.json()).error, /填写图片地址/);
     for (const options of [

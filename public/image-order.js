@@ -108,6 +108,23 @@ export function createImageOrder(options = {}) {
     displaced.selection = '';
     return { clearedFilename: displaced.filename };
   }
+  // A shared original may be confirmed or manually edited in another field.
+  // Retain that address while leaving every other tentative selection intact.
+  // Like constructor existingUrls, invalid manual values stay visible so the
+  // normal validation can explain them rather than silently accepting them.
+  function retainMappings(mappings) {
+    if (!Array.isArray(mappings) || Array.from(mappings).some(mapping => !mapping ||
+      !assetNames.has(mapping.filename) || typeof mapping.url !== 'string') ||
+      new Set(mappings.map(mapping => mapping.filename)).size !== mappings.length) {
+      throw new Error('已填图片地址无效。');
+    }
+    for (const { filename, url } of mappings) {
+      const row = state.find(candidate => candidate.filename === filename);
+      row.existingUrl = /[\u0000-\u001f\u007f\\]/.test(url) ? url : url.trim();
+      row.keepUrl = row.existingUrl;
+      row.selection = row.keepUrl ? 'keep' : '';
+    }
+  }
   function validate() {
     const selectedRows = rows();
     const changedCount = selectedRows.filter(row => row.url !== row.existingUrl).length;
@@ -119,5 +136,5 @@ export function createImageOrder(options = {}) {
       changedCount
     };
   }
-  return { rows, select, validate };
+  return { rows, select, retainMappings, validate };
 }

@@ -68,19 +68,28 @@ export function createJobRecovery({ getCurrent, fetchRequest = fetch, onRecoveri
     finally { if (session.pending === pending) session.pending = undefined; }
   }
 
-  async function request(route, init) {
+  async function request(route, init, query) {
     if (!JOB_ROUTES.has(route)) throw new Error('未知的本地转换操作。');
+    let suffix = '';
+    if (query !== undefined) {
+      if (route !== 'upload-images' || !query || typeof query !== 'object' || Array.isArray(query)
+        || Object.keys(query).some(key => key !== 'sectionId')
+        || typeof query.sectionId !== 'string' || !query.sectionId) {
+        throw new Error('本地下载查询选项无效。');
+      }
+      suffix = `?${new URLSearchParams({ sectionId: query.sectionId })}`;
+    }
     const session = active;
     assertActive(session);
     const requestedJobId = session.result.jobId;
-    const response = await fetchRequest(`/api/${route}/${requestedJobId}`, init);
+    const response = await fetchRequest(`/api/${route}/${requestedJobId}${suffix}`, init);
     assertActive(session);
     if (!await isExpired(response)) return response;
     assertActive(session);
     // Another request may already have restored this job while ours was pending.
     if (session.result.jobId === requestedJobId) await recover(session);
     assertActive(session);
-    const retried = await fetchRequest(`/api/${route}/${session.result.jobId}`, init);
+    const retried = await fetchRequest(`/api/${route}/${session.result.jobId}${suffix}`, init);
     assertActive(session);
     return retried;
   }

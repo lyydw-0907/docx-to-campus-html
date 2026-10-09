@@ -26,9 +26,9 @@
   <section id="mapping" class="panel mapping" hidden>
     <div class="panel-top"><h2>把学校上传的图片带回正文</h2><span id="mapping-count">尚未填写图片地址</span></div>
     <div class="mapping-import">
-      <p id="mapping-help">下载上传用图片，在学校按图号上传，再把编辑器的整段源码粘贴到这里。工具会识别图片地址，省去逐张复制链接。</p>
-      <button id="download-upload-images">下载上传用图片</button>
-      <label>学校图片源码<textarea id="school-image-source" spellcheck="false" placeholder="在学校编辑器切换到 </>，复制包含已上传图片的整段源码，一次粘贴即可。"></textarea></label>
+      <p id="mapping-help">先选择复制栏目，只下载并上传本栏目的图片，再粘贴包含这些图片的学校编辑器源码。图片保留整篇原图号，其他栏目已填地址会保留。</p>
+      <button id="download-upload-images">下载本栏目上传用图片</button>
+      <label>当前复制范围的学校图片源码<textarea id="school-image-source" spellcheck="false" placeholder="在学校编辑器切换到 </>，复制包含本栏目已上传图片的源码，一次粘贴即可。"></textarea></label>
       <details class="relative-url-settings"><summary>图片链接是相对路径时填写学校页面地址</summary><label>学校页面地址<input id="school-page-url" type="url" placeholder="从学校编辑器页面的浏览器地址栏复制"></label></details>
       <button id="import-image-urls" class="primary">识别并填入图片地址</button>
       <p id="mapping-message" role="status" aria-live="polite"></p>
@@ -39,10 +39,10 @@
         <button id="confirm-image-order">确认图片对应关系</button>
       </div>
     </div>
-    <details id="manual-mapping" class="manual-mapping"><summary>逐张查看图片或手动修改地址</summary><button id="clear-image-urls" class="small">清空已填地址</button><div id="asset-list"></div></details>
+    <details id="manual-mapping" class="manual-mapping"><summary>逐张查看当前复制范围的图片或手动修改地址</summary><button id="clear-image-urls" class="small">清空本栏目图片地址</button><div id="asset-list"></div></details>
     <p id="mapping-format-note">原生公式无需上传图片。当前文档仍需检查学校保存后图片是否正常显示。</p>
     <div class="mapping-copy-control"><label id="mapping-section-control">复制范围<select id="mapping-section-select" aria-describedby="mapping-copy-note"></select></label><p id="mapping-copy-note" role="status" aria-live="polite"></p></div>
-    <div class="mapped-actions"><button id="copy-mapped" class="primary" disabled>复制到学校编辑器</button><button id="download-mapped" disabled>下载已替换图片地址的 HTML</button></div>
+    <div class="mapped-actions"><button id="copy-mapped" class="primary" disabled>复制到学校编辑器</button><button id="download-mapped" title="完整文档下载需要填写并确认整篇图片地址" disabled>下载整篇已替换图片地址的 HTML</button></div>
   </section>
   <section class="panel compatibility"><div class="panel-top"><h2>检查保存并重新打开后的效果</h2><button id="probe">生成测试片段</button></div><p>在可删除的测试草稿中粘贴测试片段，保存后离开页面，再重新打开。将两份 HTML 源码放到下面比较，并检查页面图片、字号和对齐。</p><div class="compare-inputs"><label>保存前的 HTML<textarea id="before" spellcheck="false" placeholder="生成测试片段，或粘贴保存前的源码"></textarea></label><label>重新打开后的 HTML<textarea id="after" spellcheck="false" placeholder="从学校编辑器的源码模式复制"></textarea></label></div><button id="compare">比较两份源码</button><div id="comparison" aria-live="polite"></div></section>
   <p id="site-visits" class="site-visits" hidden aria-live="polite"></p>

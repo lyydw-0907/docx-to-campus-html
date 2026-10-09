@@ -3,6 +3,7 @@ import { load } from './html.js';
 import { compareFragments, safeImageUrl } from './compare.js';
 import { importImageUrls } from './image-import.js';
 import { validateDocumentType } from '../src/sections.mjs';
+import { resolveImageScope } from '../src/image-scope.mjs';
 
 const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
 const JOB_TTL = 30 * 60 * 1000;
@@ -63,11 +64,11 @@ function base64(value) {
 
 function imageDataSource(asset) { return `data:${asset.mime};base64,${base64(asset.data)}`; }
 
-function sourceMappings(result, urls) {
+function sourceMappings(result, urls, assets = resolveImageScope(result).assets) {
   if (!plainObject(urls)) throw new Error('图片地址列表无效。');
   const sources = new Map();
   const mapped = new Map();
-  for (const asset of result.assets) {
+  for (const asset of assets) {
     if (!Object.hasOwn(urls, asset.filename) || !urls[asset.filename]) throw new Error(`请先填写图片地址：${asset.filename}`);
     const supplied = urls[asset.filename];
     if (typeof supplied !== 'string' || supplied.length > 4096 || /[\u0000-\u001f\u007f\\]/.test(supplied)) throw new Error('图片地址必须是无账号密码的绝对 HTTP(S) URL。');
@@ -92,19 +93,19 @@ function rewriteImages(html, sources) {
 
 function mapSectionCopy(result, sectionId, urls = {}) {
   if (typeof sectionId !== 'string' || !sectionId) throw new Error('复制栏目标识无效，请重新选择学校栏目。');
-  const sources = sourceMappings(result, urls);
+  const scope = resolveImageScope(result, sectionId);
+  const sources = sourceMappings(result, urls, scope.assets);
   const selected = sectionId === 'whole' ? {
     id: 'whole', title: '整篇文档', kind: 'whole', fragment: result.fragment,
     assetFilenames: result.assets.map(asset => asset.filename),
     formulaCount: result.manifest.formulas?.length ?? 0,
     imageCount: result.assets.filter(asset => asset.kind !== 'formula').length,
-  } : result.sections.find(section => section.id === sectionId && ['field', 'unassigned'].includes(section.kind));
-  if (!selected) throw new Error('该内容不是可复制的正文，请重新选择。');
+  } : scope.section;
   const fragment = selected.fragment;
-  if (!(/<(?:img|math|table|hr)\b/i.test(fragment) || fragment.replace(/<[^>]*>/g, '').replace(/&(?:nbsp|#160);/g, ' ').trim())) {
+  if (typeof fragment !== 'string' || !(/<(?:img|math|table|hr)\b/i.test(fragment) || fragment.replace(/<[^>]*>/g, '').replace(/&(?:nbsp|#160);/g, ' ').trim())) {
     throw new Error('此栏目没有正文内容，请检查 Word。');
   }
-  const { preview, ...metadata } = selected;
+  const metadata = Object.fromEntries(Object.keys(selected).filter(key => key !== 'fragment' && key !== 'preview').map(key => [key, selected[key]]));
   return { ...metadata, fragment: rewriteImages(fragment, sources) };
 }
 
@@ -306,15 +307,21 @@ export function createBrowserApi({ convert, onProgress, demoUrl, progressDemoUrl
         if (!plainObject(data) || typeof data.html !== 'string') throw new Error('请提供含 HTML 源码的图片地址请求。');
         if (encoder.encode(data.html).byteLength > 2 * 1024 * 1024) throw new Error('图片 HTML 源码过大，最多 2 MB。');
         if (data.pageUrl !== undefined && typeof data.pageUrl !== 'string') throw new Error('学校页面地址应为 HTTP(S) 地址文本。');
-        return reply(200, importImageUrls(data.html, summaries(result), { pageUrl: data.pageUrl }));
+        const scope = resolveImageScope(result, data.sectionId);
+        const names = new Set(scope.assetFilenames);
+        const assets = summaries(result).filter(asset => names.has(asset.filename));
+        return reply(200, { ...importImageUrls(data.html, assets, { pageUrl: data.pageUrl }), sectionId: scope.id, assetFilenames: scope.assetFilenames });
       }
       const uploadMatch = url.pathname.match(/^\/api\/upload-images\/([^/]+)$/);
       if (method === 'GET' && uploadMatch) {
         const { result } = getJob(uploadMatch[1]);
-        if (!result.assets.length) throw new Error('当前转换结果不含图片，无需上传。');
-        const assets = summaries(result);
+        const scope = resolveImageScope(result, url.searchParams.has('sectionId') ? url.searchParams.get('sectionId') : undefined);
+        if (!scope.assets.length) throw new Error('当前栏目不含图片，无需上传。');
+        const names = new Set(scope.assetFilenames);
+        const assets = summaries(result).filter(asset => names.has(asset.filename));
+        const byFilename = new Map(scope.assets.map(asset => [asset.filename, asset]));
         const zip = new JSZip();
-        result.assets.forEach((asset, offset) => zip.file(assets[offset].uploadFilename, asset.data));
+        assets.forEach(asset => zip.file(asset.uploadFilename, byFilename.get(asset.filename).data));
         zip.file('上传顺序.txt', '请按文件名前的编号逐张通过学校编辑器的插图工具上传。上传后复制含图片的学校 HTML 源码，粘贴回本工具识别地址，并核对图片顺序。\n工具没有上传图片、保存草稿或提交申报。\n\n' + assets.map(asset => asset.uploadFilename).join('\n') + '\n');
         return reply(200, await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }), 'application/zip', { 'Content-Disposition': 'attachment; filename="upload-images.zip"' });
       }

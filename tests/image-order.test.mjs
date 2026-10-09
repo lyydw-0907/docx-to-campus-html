@@ -233,3 +233,24 @@ test('fully filled existing correspondence can still be edited with accurate cha
   assert.equal(model.validate().changedCount, 2);
   assert.equal(model.validate().valid, true);
 });
+
+test('retaining a confirmed shared address preserves other tentative selections and exposes conflicts', () => {
+  const model = create();
+  model.select(assets[0].filename, '2');
+  model.retainMappings([{ filename: assets[0].filename, url: images[0].url }]);
+  assert.equal(model.rows()[0].selection, 'keep');
+  assert.equal(model.rows()[0].url, images[0].url);
+  assert.equal(model.rows()[1].selection, '1');
+  assert.equal(model.validate().valid, false, 'other tentative row still conflicts with confirmed URL');
+  model.select(assets[1].filename, '2');
+  assert.equal(model.validate().valid, true);
+});
+
+test('retained manual shared edits remain visible and invalid addresses cannot be confirmed', () => {
+  const model = create();
+  model.retainMappings([{ filename: assets[0].filename, url: 'javascript:bad' }]);
+  assert.equal(model.rows()[0].url, 'javascript:bad');
+  assert.equal(model.validate().valid, false);
+  assert.throws(() => model.retainMappings([{ filename: 'missing.png', url: images[0].url }]), /已填图片地址无效/);
+  assert.equal(model.rows()[1].url, images[1].url);
+});

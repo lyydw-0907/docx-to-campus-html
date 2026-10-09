@@ -33,6 +33,43 @@ function harness(fetchRequest, callbacks = {}) {
   return { recovery, originalInput, params, getCurrent: () => current, setCurrent: result => { current = result; } };
 }
 
+test('scoped upload download keeps its captured section query after job restoration', async () => {
+  const calls = [];
+  const state = harness(async (url, options) => {
+    calls.push({ url, options });
+    if (url.startsWith('/api/convert?')) return json(fixture(NEW_ID));
+    return url.includes(OLD_ID) ? expired() : json({ ready: true });
+  });
+  const query = { sectionId: 'research-content' };
+  const pending = state.recovery.request('upload-images', undefined, query);
+  query.sectionId = 'whole';
+  assert.equal((await pending).status, 200);
+  assert.equal(calls[0].url, `/api/upload-images/${OLD_ID}?sectionId=research-content`);
+  assert.equal(calls[2].url, `/api/upload-images/${NEW_ID}?sectionId=research-content`);
+  assert.equal(state.getCurrent().jobId, NEW_ID);
+});
+
+test('scoped download encodes a section as a query value rather than a URL path', async () => {
+  let target;
+  const state = harness(async url => { target = url; return json({ ready: true }); });
+  await state.recovery.request('upload-images', undefined, { sectionId: 'content?x=1#other' });
+  const parsed = new URL(target, 'http://127.0.0.1');
+  assert.equal(parsed.pathname, `/api/upload-images/${OLD_ID}`);
+  assert.equal(parsed.searchParams.get('sectionId'), 'content?x=1#other');
+  assert.equal(parsed.hash, '');
+});
+
+test('invalid download query options make no local requests', async () => {
+  let calls = 0;
+  const state = harness(async () => { calls++; return json({ ready: true }); });
+  for (const [route, query] of [['export', { sectionId: 'whole' }], ['upload-images', null],
+    ['upload-images', []], ['upload-images', { sectionId: '' }], ['upload-images', { sectionId: 1 }],
+    ['upload-images', { sectionId: 'whole', external: 'https://school.example.test' }]]) {
+    await assert.rejects(state.recovery.request(route, undefined, query), /查询选项/);
+  }
+  assert.equal(calls, 0);
+});
+
 test('expired import restores original input and options, preserves result identity, and retries its unchanged payload', async () => {
   const calls = [];
   const callbacks = [];
