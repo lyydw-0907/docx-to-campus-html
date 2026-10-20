@@ -15,6 +15,18 @@ function fixture() {
   };
 }
 
+test('read-only snapshots of another scope retain selection, async tokens and mapped caches', () => {
+  const view = createSectionView(), original = fixture(); view.setResult(original);
+  view.select('content'); view.setMappedSection({ ...original.sections[1], fragment: 'mapped content' });
+  const token = view.token();
+  assert.equal(view.snapshot('purpose').copyable, true);
+  assert.equal(view.snapshot('content').fragment, 'mapped content');
+  assert.equal(view.snapshot('whole').needsMapping, true);
+  assert.equal(view.snapshot('unassigned-1').kind, 'unassigned');
+  assert.equal(view.snapshot('missing'), undefined);
+  assert.equal(view.snapshot().id, 'content'); assert.equal(view.matches(token), true);
+});
+
 test('default field is copyable without waiting for unrelated fields images', () => {
   const view = createSectionView(); view.setResult(fixture());
   assert.equal(view.snapshot().id, 'purpose');

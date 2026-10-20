@@ -50,6 +50,10 @@ function fixture(t, { shared = false } = {}) {
   t.after(() => { globalThis.document = previous; });
   const controls = new Map();
   const byId = id => { if (!controls.has(id)) controls.set(id, new Element()); return controls.get(id); };
+  byId('image-order-confirmation').append(byId('image-order-list'), byId('image-order-message'), byId('confirm-image-order'));
+  byId('manual-mapping').append(byId('clear-image-urls'), byId('asset-list'));
+  byId('mapping-image-controls').append(...['mapping-help', 'download-upload-images', 'school-image-source', 'school-page-url',
+    'import-image-urls', 'mapping-message', 'image-order-confirmation', 'manual-mapping', 'mapping-format-note'].map(byId));
   const assets = [1, 2, 3].map(number => ({ filename: `image-${number}.png`, uploadFilename: `图${number}-image-${number}.png` }));
   const section = (id, filenames) => ({ id, title: id, kind: 'field', assetFilenames: filenames,
     fragment: `<p>${id}</p>${filenames.map(filename => `<img src="${filename}">`).join('')}`, preview: '<p>local only</p>', formulaCount: 0, imageCount: filenames.length });
@@ -63,7 +67,7 @@ function fixture(t, { shared = false } = {}) {
     const row = new Element(); const input = new Element('input'); row.append(input); byId('asset-list').append(row);
     assetInputs.set(asset.filename, input);
   }
-  const requests = []; const downloads = []; const statuses = []; const copied = [];
+  const requests = []; const downloads = []; const statuses = []; const copied = []; const changes = []; const scopeSelections = [];
   let respond = async (route, init) => {
     if (route === 'upload-images') return new Response('zip');
     if (route === 'export') {
@@ -79,7 +83,9 @@ function fixture(t, { shared = false } = {}) {
     showMappedSource: exported => view.setMappedSection(exported.section), resetMappedSource: () => view.resetMapped(),
     requestJob: async (...args) => { requests.push(args); return respond(...args); },
     getCopyContext: () => view.token(), isCopyContextCurrent: token => view.matches(token),
-    getCopyState: () => view.snapshot(), copySelectedSource: async () => copied.push(view.snapshot().id)
+    getCopyState: () => view.snapshot(), copySelectedSource: async () => copied.push(view.snapshot().id),
+    onChange: () => changes.push({ selectedId: view.snapshot()?.id, status: mapping.scopeStatus(view.snapshot()?.id) }),
+    onScopeSelect: id => { scopeSelections.push(id); view.select(id); mapping.refresh(); }
   });
   mapping.reset();
   const choose = id => { view.select(id); mapping.refresh(); };
@@ -93,7 +99,7 @@ function fixture(t, { shared = false } = {}) {
     respond = async route => { assert.equal(route, 'import-images'); return new Response(JSON.stringify(report)); };
     await byId('import-image-urls').fire('click');
   };
-  return { mapping, current, view, byId, assetInputs, requests, downloads, statuses, copied, choose, replaceCurrent, setUrl,
+  return { mapping, current, view, byId, assetInputs, requests, downloads, statuses, copied, changes, scopeSelections, choose, replaceCurrent, setUrl,
     importReport, respond: handler => { respond = handler; } };
 }
 const orderReport = images => ({ detectedCount: images.length, matches: [], warnings: [],
@@ -143,6 +149,136 @@ test('upload download carries selected scope and text-only scopes offer no image
   assert.equal(f.byId('import-image-urls').disabled, true);
   await f.byId('download-upload-images').fire('click');
   assert.equal(f.requests.length, 1);
+});
+
+test('an image-free scope explains direct copy, hides image controls and explicitly switches without moving scope source or drafts', async t => {
+  const f = fixture(t);
+  await f.importReport(orderReport([3, 1]));
+  const nodes = [...f.byId('image-order-list').children];
+  const savedOrder = f.mapping.exportState().orders[0];
+  f.choose('text');
+  assert.equal(f.byId('image-empty-state').hidden, false);
+  assert.match(f.byId('image-empty-message').textContent, /当前栏目没有需要上传的图片.*可直接复制/);
+  assert.equal(f.byId('mapping-image-controls').hidden, true);
+  assert.equal(f.byId('show-whole-images').hidden, false);
+  assert.equal(f.byId('copy-mapped').disabled, false);
+  await f.byId('copy-mapped').fire('click');
+  assert.deepEqual(f.copied, ['text']);
+  f.byId('school-image-source').value = '<p>text-scope saved source</p>';
+  await f.byId('school-image-source').fire('input');
+  const count = f.changes.length;
+  await f.byId('show-whole-images').fire('click');
+  assert.deepEqual(f.scopeSelections, ['whole']);
+  assert.equal(f.view.snapshot().id, 'whole');
+  assert.equal(f.byId('school-image-source').value, '', 'a different scope source is never moved automatically');
+  assert.equal(f.byId('mapping-image-controls').hidden, false);
+  assert.equal(f.byId('image-empty-state').hidden, true);
+  assert.equal(f.changes.length, count, 'scope navigation is not a content change');
+  f.choose('text');
+  assert.equal(f.byId('school-image-source').value, '<p>text-scope saved source</p>');
+  f.choose('first');
+  assert.equal(f.byId('school-image-source').value, '<p>synthetic school images</p>');
+  assert.deepEqual(f.byId('image-order-list').children, nodes);
+  assert.deepEqual(f.mapping.exportState().orders[0], savedOrder);
+});
+
+test('an entirely image-free document offers direct whole copy without a whole-images action', t => {
+  const f = fixture(t);
+  f.replaceCurrent({ ...f.current, assets: [], sections: f.current.sections.map(section => ({ ...section, assetFilenames: [] })) });
+  f.choose('whole');
+  assert.equal(f.byId('mapping-image-controls').hidden, true);
+  assert.equal(f.byId('image-empty-state').hidden, false);
+  assert.match(f.byId('image-empty-message').textContent, /整篇文档没有需要上传的图片.*可直接复制整篇 HTML/);
+  assert.equal(f.byId('show-whole-images').hidden, true);
+  assert.equal(f.byId('copy-mapped').disabled, false);
+});
+
+test('scope readiness uses trusted metadata and scoped address validation without changing selection, sources, order or caches', async t => {
+  const f = fixture(t);
+  assert.deepEqual(f.mapping.scopeStatus('first'), { empty: false, imageCount: 2, missingCount: 2, unconfirmed: false, ready: false });
+  assert.deepEqual(f.mapping.scopeStatus('text'), { empty: true, imageCount: 0, missingCount: 0, unconfirmed: false, ready: true });
+  assert.equal(f.mapping.scopeStatus('unknown'), undefined);
+  await f.setUrl(1, url(1)); await f.setUrl(3, url(1));
+  assert.deepEqual(f.mapping.scopeStatus('first'), { empty: false, imageCount: 2, missingCount: 1, unconfirmed: false, ready: false });
+  await f.setUrl(3, 'unfinished');
+  assert.equal(f.mapping.scopeStatus('first').missingCount, 1);
+  await f.setUrl(3, url(3));
+  await f.importReport(orderReport([1, 3]));
+  assert.deepEqual(f.mapping.scopeStatus('first'), { empty: false, imageCount: 2, missingCount: 0, unconfirmed: true, ready: false });
+  assert.equal(f.mapping.scopeStatus('second').unconfirmed, false);
+  const before = { token: f.view.token(), state: f.mapping.exportState(), revision: f.mapping.getRevision(), changes: f.changes.length,
+    source: f.byId('school-image-source').value, nodes: [...f.byId('image-order-list').children] };
+  f.mapping.scopeStatus('whole'); f.mapping.scopeStatus('text'); f.mapping.scopeStatus('second');
+  assert.deepEqual(f.view.token(), before.token);
+  assert.deepEqual(f.mapping.exportState(), before.state);
+  assert.equal(f.mapping.getRevision(), before.revision);
+  assert.equal(f.changes.length, before.changes);
+  assert.equal(f.byId('school-image-source').value, before.source);
+  assert.deepEqual(f.byId('image-order-list').children, before.nodes);
+  await f.byId('confirm-image-order').fire('click');
+  assert.equal(f.mapping.scopeStatus('first').ready, true);
+  assert.equal(f.mapping.scopeStatus('whole').ready, false);
+  f.current.sections.push({ id: 'summary', kind: 'summary', assetFilenames: ['image-1.png'] });
+  assert.equal(f.mapping.scopeStatus('summary'), undefined);
+});
+
+test('scope readiness honors pending shared images while independent completed scopes stay ready', async t => {
+  const f = fixture(t, { shared: true });
+  await f.setUrl(1, url(1)); await f.setUrl(3, url(3));
+  await f.importReport(orderReport([1, 3]));
+  assert.equal(f.mapping.scopeStatus('second').unconfirmed, true);
+  assert.equal(f.mapping.scopeStatus('second').ready, false);
+  f.choose('second');
+  await f.importReport({ detectedCount: 1, matches: [{ filename: 'image-1.png', url: url(1), method: 'filename' }],
+    warnings: [], canAdjustOrder: true, orderReady: false, imageChoices: [{ index: 1, url: url(1) }] });
+  assert.deepEqual(f.mapping.scopeStatus('second'), { empty: false, imageCount: 1, missingCount: 0, unconfirmed: false, ready: true });
+  assert.equal(f.mapping.scopeStatus('first').unconfirmed, true);
+  assert.equal(f.mapping.scopeStatus('first').ready, false);
+});
+
+test('content changes notify with final readiness, while navigation, repeated inputs, reset, restore and mapped copying do not', async t => {
+  const f = fixture(t);
+  assert.equal(f.changes.length, 0);
+  f.mapping.refresh(); f.choose('text'); f.choose('first');
+  assert.equal(f.changes.length, 0);
+  f.byId('school-image-source').value = '<p>school source</p>';
+  await f.byId('school-image-source').fire('input');
+  assert.equal(f.changes.length, 1);
+  await f.byId('school-image-source').fire('input');
+  assert.equal(f.changes.length, 1, 'unchanged source input is ignored');
+  f.byId('school-page-url').value = 'https://school.test/editor';
+  await f.byId('school-page-url').fire('input');
+  assert.equal(f.changes.length, 2);
+  await f.setUrl(1, url(1));
+  assert.equal(f.changes.length, 3);
+  await f.setUrl(1, url(1));
+  assert.equal(f.changes.length, 3, 'unchanged manual address input is ignored');
+  await f.setUrl(3, url(3));
+  assert.equal(f.changes.at(-1).status.ready, true);
+  const beforeCopy = f.changes.length;
+  await f.byId('copy-mapped').fire('click');
+  assert.equal(f.changes.length, beforeCopy, 'mapped HTML cache and successful copying are not content edits');
+  await f.importReport(orderReport([3, 1]));
+  assert.equal(f.changes.at(-1).status.unconfirmed, true, 'import callback sees completed pending draft');
+  const select = f.byId('image-order-list').children[0].children[1].children[1].children[0];
+  const beforeSelection = f.changes.length;
+  await select.fire('change');
+  assert.equal(f.changes.length, beforeSelection, 'repeated order selection is not a content edit');
+  select.value = '1'; await select.fire('change');
+  assert.equal(f.changes.length, beforeSelection + 1);
+  await f.byId('confirm-image-order').fire('click');
+  assert.equal(f.changes.at(-1).status.ready, true, 'confirmation callback sees confirmed addresses');
+  const confirmed = f.changes.length;
+  await f.byId('confirm-image-order').fire('click');
+  assert.equal(f.changes.length, confirmed);
+  await f.byId('clear-image-urls').fire('click');
+  assert.equal(f.changes.length, confirmed + 1);
+  assert.equal(f.changes.at(-1).status.missingCount, 2);
+  await f.byId('clear-image-urls').fire('click');
+  assert.equal(f.changes.length, confirmed + 1, 'clearing empty addresses is a no-op');
+  const saved = f.mapping.exportState();
+  f.mapping.restoreState(saved); f.mapping.refresh(); f.mapping.reset();
+  assert.equal(f.changes.length, confirmed + 1);
 });
 
 test('scoped order can be swapped and confirmed using original document picture numbers', async t => {
@@ -549,4 +685,100 @@ test('applying an import result increments revision so asynchronous saved snapsh
   const duringImport = f.mapping.getRevision();
   pending.resolve(new Response(JSON.stringify(orderReport([1, 3])))); await importing;
   assert.ok(f.mapping.getRevision() > duringImport);
+});
+
+test('cancelPending discards a late image import while retaining source, addresses and another pending scope draft', async t => {
+  const f = fixture(t); const pending = deferred();
+  await f.setUrl(1, url(1));
+  await f.importReport(orderReport([1, 3]));
+  f.choose('second');
+  f.byId('school-image-source').value = '<p>second import in flight</p>';
+  await f.byId('school-image-source').fire('input');
+  f.respond(() => pending.promise);
+  const importing = f.byId('import-image-urls').fire('click');
+  const before = f.mapping.exportState();
+  const changeCount = f.changes.length;
+  const revision = f.mapping.getRevision();
+  f.mapping.cancelPending();
+  assert.ok(f.mapping.getRevision() > revision);
+  assert.deepEqual(f.mapping.exportState(), before);
+  assert.equal(f.changes.length, changeCount);
+  pending.resolve(new Response(JSON.stringify(orderReport([2])))); await importing;
+  assert.deepEqual(f.mapping.exportState(), before);
+  assert.equal(f.byId('school-image-source').value, '<p>second import in flight</p>');
+  assert.equal(f.byId('import-image-urls').disabled, false);
+  assert.equal(f.changes.length, changeCount);
+  f.choose('first');
+  assert.equal(f.byId('image-order-list').children.length, 2);
+  assert.equal(f.mapping.scopeStatus('first').unconfirmed, true);
+});
+
+test('cancelPending discards a late mapped copy without clearing addresses or unrelated order drafts', async t => {
+  const f = fixture(t); const pending = deferred();
+  f.choose('second'); await f.importReport(orderReport([2]));
+  f.choose('first'); await f.setUrl(1, url(1)); await f.setUrl(3, url(3));
+  f.respond(() => pending.promise);
+  const copying = f.byId('copy-mapped').fire('click');
+  const before = f.mapping.exportState(); const changeCount = f.changes.length;
+  f.mapping.cancelPending();
+  pending.resolve(new Response(JSON.stringify({ section: { ...f.current.sections[0], fragment: '<p>late mapped response</p>' } }))); await copying;
+  assert.deepEqual(f.copied, []);
+  assert.equal(f.view.snapshot().mapped, false);
+  assert.deepEqual(f.mapping.exportState(), before);
+  assert.equal(f.changes.length, changeCount);
+  assert.equal(f.byId('copy-mapped').disabled, false);
+  f.choose('second');
+  assert.equal(f.mapping.scopeStatus('second').unconfirmed, true);
+});
+
+test('private replacement checkpoint preserves oversized unfinished input and draft nodes without allowing it through external ZIP validation', async t => {
+  const f = fixture(t);
+  const valid = f.mapping.exportState();
+  const oversizedUrl = 'unfinished-' + 'x'.repeat(4096);
+  const oversizedSource = '<p>' + 's'.repeat(2 * 1024 * 1024) + '</p>';
+  const oversizedPage = 'page-' + 'p'.repeat(4096);
+  await f.setUrl(1, oversizedUrl);
+  await f.importReport(orderReport([1, 3]));
+  const nodes = [...f.byId('image-order-list').children];
+  const keptSelect = nodes[0].children[1].children[1].children[0];
+  assert.equal(keptSelect.value, 'keep');
+  f.choose('second');
+  f.byId('school-image-source').value = oversizedSource;
+  await f.byId('school-image-source').fire('input');
+  f.byId('school-page-url').value = oversizedPage;
+  await f.byId('school-page-url').fire('input');
+  assert.throws(() => f.mapping.exportState());
+  const before = { revision: f.mapping.getRevision(), changes: f.changes.length };
+  const restore = f.mapping.captureForReplacement();
+  assert.equal(typeof restore, 'function');
+  assert.equal(f.mapping.getRevision(), before.revision);
+  assert.equal(f.changes.length, before.changes);
+
+  f.replaceCurrent({ ...f.current, jobId: 'new-candidate' });
+  for (const input of f.assetInputs.values()) input.value = '';
+  assert.throws(restore, /只能恢复原转换/);
+  assert.equal(f.byId('school-image-source').value, '');
+  assert.equal(f.byId('image-order-confirmation').hidden, true);
+  f.replaceCurrent(f.current);
+  restore();
+  assert.equal(f.assetInputs.get('image-1.png').value, oversizedUrl);
+  assert.deepEqual(f.byId('image-order-list').children, nodes, 'oversized retained draft bypasses no external restore validator');
+  assert.equal(keptSelect.value, 'keep');
+  assert.equal(f.mapping.scopeStatus('first').unconfirmed, true);
+  assert.equal(f.byId('confirm-image-order').disabled, true);
+  f.choose('second');
+  assert.equal(f.byId('school-image-source').value, oversizedSource);
+  assert.equal(f.byId('school-page-url').value, oversizedPage);
+  assert.equal(f.changes.length, before.changes, 'internal rollback is not a content edit');
+  assert.throws(() => f.mapping.exportState(), 'progress export keeps the original size bounds');
+
+  for (const mutate of [
+    snapshot => { snapshot.urls['image-1.png'] = oversizedUrl; },
+    snapshot => { snapshot.sources[0].html = oversizedSource; },
+    snapshot => { snapshot.sources[0].pageUrl = oversizedPage; },
+  ]) {
+    const unsafe = structuredClone(valid); mutate(unsafe);
+    assert.throws(() => f.mapping.restoreState(unsafe), 'external restore keeps the original size bounds');
+    assert.equal(f.byId('school-image-source').value, oversizedSource, 'rejected import does not touch restored raw input');
+  }
 });

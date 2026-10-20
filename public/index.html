@@ -20,9 +20,11 @@
     <label class="progress-file-label">恢复工作进度<input id="progress-file" type="file" accept=".zip,application/zip" aria-label="恢复工作进度" aria-describedby="progress-help"></label>
     <button id="cancel-progress" hidden>取消恢复</button>
     <p id="progress-help">进度文件包含原 Word、转换设置和图片对应关系。下次直接导入继续，无需解压；文件由你保存在本机。</p>
+    <p id="progress-state" role="status" aria-live="polite">尚无可保存的工作进度。</p>
   </section>
   <section id="section-controls" class="panel section-controls" hidden>
     <label>复制范围<select id="section-select" aria-describedby="section-note"></select></label>
+    <button id="next-section" class="small" hidden>下一栏目</button>
     <p id="section-note" role="status" aria-live="polite"></p>
   </section>
   <section id="workspace" class="workspace" hidden>
@@ -31,6 +33,11 @@
   </section>
   <section id="mapping" class="panel mapping" hidden>
     <div class="panel-top"><h2>把学校上传的图片带回正文</h2><span id="mapping-count">尚未填写图片地址</span></div>
+    <div id="image-empty-state" class="image-empty-state" hidden>
+      <p id="image-empty-message" role="status" aria-live="polite"></p>
+      <button id="show-whole-images" hidden>查看整篇图片</button>
+    </div>
+    <div id="mapping-image-controls">
     <div class="mapping-import">
       <p id="mapping-help">先选择复制栏目，只下载并上传本栏目的图片，再粘贴包含这些图片的学校编辑器源码。图片保留整篇原图号，其他栏目已填地址会保留。</p>
       <button id="download-upload-images">下载本栏目上传用图片</button>
@@ -47,7 +54,8 @@
     </div>
     <details id="manual-mapping" class="manual-mapping"><summary>逐张查看当前复制范围的图片或手动修改地址</summary><button id="clear-image-urls" class="small">清空本栏目图片地址</button><div id="asset-list"></div></details>
     <p id="mapping-format-note">原生公式无需上传图片。当前文档仍需检查学校保存后图片是否正常显示。</p>
-    <div class="mapping-copy-control"><label id="mapping-section-control">复制范围<select id="mapping-section-select" aria-describedby="mapping-copy-note"></select></label><p id="mapping-copy-note" role="status" aria-live="polite"></p></div>
+    </div>
+    <div class="mapping-copy-control"><label id="mapping-section-control">复制范围<select id="mapping-section-select" aria-describedby="mapping-copy-note"></select></label><button id="mapping-next-section" class="small" hidden>下一栏目</button><p id="mapping-copy-note" role="status" aria-live="polite"></p></div>
     <div class="mapped-actions"><button id="copy-mapped" class="primary" disabled>复制到学校编辑器</button><button id="download-mapped" title="完整文档下载需要填写并确认整篇图片地址" disabled>下载整篇已替换图片地址的 HTML</button></div>
   </section>
   <section class="panel compatibility"><div class="panel-top"><h2>检查保存并重新打开后的效果</h2><button id="probe">生成测试片段</button></div><p>在可删除的测试草稿中粘贴测试片段，保存后离开页面，再重新打开。将两份 HTML 源码放到下面比较，并检查页面图片、字号和对齐。</p><div class="compare-inputs"><label>保存前的 HTML<textarea id="before" spellcheck="false" placeholder="生成测试片段，或粘贴保存前的源码"></textarea></label><label>重新打开后的 HTML<textarea id="after" spellcheck="false" placeholder="从学校编辑器的源码模式复制"></textarea></label></div><button id="compare">比较两份源码</button><div id="comparison" aria-live="polite"></div></section>

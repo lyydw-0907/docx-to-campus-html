@@ -90,7 +90,7 @@ export function validateImageMappingState(snapshot, current) {
 
 /** Paste-to-map workflow. Imported HTML and school images are never rendered. */
 export function createImageMapping({ getCurrent, assetInputs, byId, json, download, status, showMappedSource, resetMappedSource, requestJob,
-  getCopyContext, isCopyContextCurrent, getCopyState, copySelectedSource }) {
+  getCopyContext, isCopyContextCurrent, getCopyState, copySelectedSource, onChange, onScopeSelect }) {
   let revision = 0;
   const orders = new Map();
   const sources = new Map();
@@ -98,6 +98,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
   let displayedCurrent;
   let mappingRequest;
   let importRequest;
+  let changeStamp;
   const message = (text, error = false) => {
     byId('mapping-message').textContent = text;
     byId('mapping-message').classList.toggle('error', error);
@@ -116,6 +117,52 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
     const names = new Set(assets.map(asset => asset.filename));
     return [...orders.values()].some(state => orderIsCurrent(state) && [...state.pendingFilenames].some(filename => names.has(filename)));
   };
+  // Read only trusted conversion scopes; querying readiness never selects a scope
+  // or creates mapped HTML, source entries, or correspondence drafts.
+  function scopeStatus(id) {
+    const current = getCurrent();
+    if (!current) return undefined;
+    const scope = id === 'whole' ? { assetFilenames: current.assets.map(asset => asset.filename) }
+      : current.sections?.find(section => section.id === id && ['field', 'unassigned'].includes(section.kind));
+    if (!scope) return undefined;
+    const assets = scopedAssets(scope);
+    const seen = new Set();
+    let missingCount = 0;
+    for (const asset of assets) {
+      const value = assetInputs.get(asset.filename)?.value;
+      if (!validateImageUrls([value]).valid) { missingCount++; continue; }
+      const key = new URL(value.trim()).href;
+      if (seen.has(key)) missingCount++;
+      seen.add(key);
+    }
+    const unconfirmed = hasUnconfirmed(assets);
+    return { empty: assets.length === 0, imageCount: assets.length, missingCount, unconfirmed,
+      ready: assets.length === 0 || addressesValid(assets) && !unconfirmed };
+  }
+  function contentStamp() {
+    const current = getCurrent();
+    if (!current) return undefined;
+    const visible = displayedCurrent === current ? displayedScope : undefined;
+    const scopeIds = ['whole', ...(current.sections ?? []).filter(section => ['field', 'unassigned'].includes(section.kind)).map(section => section.id)];
+    return JSON.stringify({
+      urls: current.assets.map(asset => [asset.filename, assetInputs.get(asset.filename)?.value ?? '']),
+      sources: scopeIds.map(id => {
+        const source = id === visible ? { html: byId('school-image-source').value, pageUrl: byId('school-page-url').value } : sources.get(id);
+        return [id, source?.html ?? '', source?.pageUrl ?? ''];
+      }),
+      orders: scopeIds.map(id => {
+        const state = orders.get(id);
+        return !state || !orderIsCurrent(state) ? null : { id, images: state.report.imageChoices,
+          rows: state.draft.exportState(), pending: [...state.pendingFilenames], confirmed: state.confirmed };
+      }),
+    });
+  }
+  function notifyChange() {
+    const next = contentStamp();
+    const changed = next !== changeStamp;
+    changeStamp = next;
+    if (changed && getCurrent()) onChange?.();
+  }
   function retainSharedMappings(mappings, except) {
     for (const state of orders.values()) {
       if (state === except || !orderIsCurrent(state)) continue;
@@ -145,7 +192,8 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
   function refresh() {
     const selected = getCopyState();
     const current = getCurrent();
-    if (displayedCurrent !== current) {
+    const changedCurrent = displayedCurrent !== current;
+    if (changedCurrent) {
       orders.clear(); sources.clear(); displayedScope = undefined;
       displayedCurrent = current;
     }
@@ -161,6 +209,14 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
     const assets = scopedAssets(selected);
     const allAssets = current?.assets ?? [];
     const whole = selected?.kind === 'whole';
+    const empty = Boolean(selected && !assets.length);
+    byId('mapping-image-controls').hidden = !selected || empty;
+    byId('image-empty-state').hidden = !empty;
+    byId('image-empty-message').textContent = whole
+      ? '整篇文档没有需要上传的图片，可直接复制整篇 HTML。'
+      : `当前栏目没有需要上传的图片，可直接复制本栏目正文。${allAssets.length
+        ? '其他栏目的图片可切换到对应栏目处理，或查看整篇图片。' : '整篇文档也没有需要上传的图片。'}`;
+    byId('show-whole-images').hidden = !empty || whole || !allAssets.length || !onScopeSelect;
     const filled = filledCount(assets);
     byId('mapping-count').textContent = whole
       ? `整篇已填写 ${filled} / ${assets.length} 张图片`
@@ -204,18 +260,20 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
     if (selected?.kind === 'unassigned' && selected.eligible) note += ' 粘贴位置请自行选择。';
     byId('mapping-copy-note').textContent = note;
     button.title = note;
+    if (changedCurrent) changeStamp = contentStamp();
   }
-  function invalidate() {
+  function invalidate({ notify = true } = {}) {
     revision++;
     orders.delete(getCopyState()?.id);
     hideOrder();
     message('');
     resetMappedSource();
     refresh();
+    if (notify) notifyChange();
   }
   function reset() {
     orders.clear(); sources.clear(); displayedScope = getCopyState()?.id; displayedCurrent = getCurrent();
-    invalidate();
+    invalidate({ notify: false });
     byId('school-image-source').value = '';
     byId('school-page-url').value = '';
     byId('manual-mapping').open = false;
@@ -223,6 +281,12 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
     byId('mapping-format-note').textContent = nativeMath
       ? '原生公式无需上传图片。当前文档仍需检查学校保存后图片是否正常显示。'
       : 'PNG 模式还需上传公式图片。学校会清除图片基线样式，行内公式图片的对齐仍需检查。';
+    changeStamp = contentStamp();
+  }
+  function cancelPending() {
+    revision++;
+    mappingRequest = undefined; importRequest = undefined;
+    refresh();
   }
   function fillEmpty(matches, assets) {
     let filled = 0;
@@ -307,6 +371,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
       state.controls.set(entry.filename, { select, url, change, view });
       select.addEventListener('change', () => {
         if (!orderIsCurrent(state) || getCopyState()?.id !== state.scopeId) return;
+        if (state.draft.rows().find(row => row.filename === entry.filename).selection === select.value) return;
         try {
           const changed = state.draft.select(entry.filename, select.value);
           revision++; state.confirmed = false;
@@ -319,6 +384,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
           const note = changed.swappedFilename ? `已交换原图 ${number} 与原图 ${other} 的对应关系。`
             : changed.clearedFilename ? `原图 ${other} 的选择已清空，请重新选择它对应的图片。` : '';
           updateOrder(state, note);
+          notifyChange();
         } catch (error) { byId('image-order-message').textContent = error.message; }
       });
       chooser.append(select);
@@ -334,14 +400,14 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
     }
     return state;
   }
-  function exportState() {
+  function collectState() {
     const current = getCurrent();
     if (!current) throw new Error('请先转换 Word，再保存工作进度。');
     const savedSources = new Map(sources);
     if (displayedCurrent === current && displayedScope) savedSources.set(displayedScope, {
       html: byId('school-image-source').value, pageUrl: byId('school-page-url').value,
     });
-    const snapshot = {
+    return {
       version: 1,
       urls: Object.fromEntries(current.assets.map(asset => [asset.filename, assetInputs.get(asset.filename)?.value ?? ''])),
       sources: [...savedSources].map(([sectionId, source]) => ({ sectionId, html: source.html, pageUrl: source.pageUrl })),
@@ -349,36 +415,65 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
         images: state.report.imageChoices.map(({ index, url }) => ({ index, url })), rows: state.draft.exportState(),
         pendingFilenames: [...state.pendingFilenames], confirmed: state.confirmed })),
     };
-    return validateImageMappingState(snapshot, current);
+  }
+  function exportState() {
+    return validateImageMappingState(collectState(), getCurrent());
   }
   function validateState(snapshot, freshResult = getCurrent()) {
     return validateImageMappingState(snapshot, freshResult);
   }
   function restoreState(snapshot) {
-    const current = getCurrent();
-    const saved = validateImageMappingState(snapshot, current);
     // Validate everything before touching controls or cancelling active work.
+    const saved = validateImageMappingState(snapshot, getCurrent());
+    applyState(saved);
+  }
+  function applyState(saved, retainedOrders) {
+    const current = getCurrent();
     revision++;
     mappingRequest = undefined; importRequest = undefined;
     resetMappedSource();
     orders.clear(); sources.clear();
     for (const [filename, value] of Object.entries(saved.urls)) assetInputs.get(filename).value = value;
     for (const source of saved.sources) sources.set(source.sectionId, { html: source.html, pageUrl: source.pageUrl });
-    for (const order of saved.orders) {
-      const selected = order.sectionId === 'whole' ? { id: 'whole', title: '整篇文档', assetFilenames: current.assets.map(asset => asset.filename) }
-        : current.sections.find(section => section.id === order.sectionId);
-      presentOrder({ imageChoices: order.images }, current, selected, order.confirmed, order, false);
+    if (retainedOrders) {
+      // Replacement rollback is an internal synchronous transaction. Keep its
+      // original drafts and nodes, including unfinished text beyond ZIP limits.
+      for (const [id, state] of retainedOrders) orders.set(id, state);
+    } else {
+      for (const order of saved.orders) {
+        const selected = order.sectionId === 'whole' ? { id: 'whole', title: '整篇文档', assetFilenames: current.assets.map(asset => asset.filename) }
+          : current.sections.find(section => section.id === order.sectionId);
+        presentOrder({ imageChoices: order.images }, current, selected, order.confirmed, order, false);
+      }
     }
     displayedCurrent = current; displayedScope = undefined;
     byId('school-image-source').value = ''; byId('school-page-url').value = '';
     message('已恢复图片地址和对应关系；未确认的选择仍需确认。');
     refresh();
+    changeStamp = contentStamp();
   }
-  byId('school-image-source').addEventListener('input', invalidate);
-  byId('school-page-url').addEventListener('input', invalidate);
+  function captureForReplacement() {
+    const current = getCurrent();
+    const saved = collectState();
+    const retainedOrders = new Map([...orders].filter(([, state]) => orderIsCurrent(state)));
+    // The raw snapshot and retained drafts never leave this closure and cannot
+    // be supplied by an imported ZIP or applied to a different conversion.
+    return () => {
+      if (getCurrent() !== current) throw new Error('只能恢复原转换的工作区。');
+      applyState(saved, retainedOrders);
+    };
+  }
+  const sourceInput = () => { if (contentStamp() !== changeStamp) invalidate(); };
+  byId('school-image-source').addEventListener('input', sourceInput);
+  byId('school-page-url').addEventListener('input', sourceInput);
+  byId('show-whole-images').addEventListener('click', () => {
+    if (!getCurrent()?.assets.length || scopedAssets(getCopyState()).length) return;
+    onScopeSelect?.('whole');
+  });
   byId('asset-list').addEventListener('input', event => {
     const changed = [...assetInputs].find(([, input]) => input === event.target)?.[0];
-    if (changed) retainSharedMappings([{ filename: changed, url: assetInputs.get(changed).value }], orders.get(getCopyState()?.id));
+    if (!changed || contentStamp() === changeStamp) return;
+    retainSharedMappings([{ filename: changed, url: assetInputs.get(changed).value }], orders.get(getCopyState()?.id));
     invalidate();
     const assets = scopedAssets(getCopyState());
     const checked = validateImageUrls(assets.map(asset => assetInputs.get(asset.filename)?.value));
@@ -443,6 +538,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
       else text += `还有 ${remaining} 张未填写，可补充源码或展开逐张修改。`;
       if (notes) text += ` ${notes}`;
       message(text, remaining > 0 && !report.orderReady);
+      notifyChange();
     } catch (error) { if (isCurrent()) message(error.message, true); }
     finally {
       if (importRequest === operation) importRequest = undefined;
@@ -469,6 +565,7 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
       existingUrls: existingUrls(pending.assets) });
     updateOrder(pending);
     message(`已按确认的对应关系填写 ${checked.mappings.length} 张图片地址。可以直接复制到学校编辑器；仍可修改下拉框并再次确认。`);
+    notifyChange();
   });
   byId('copy-mapped').addEventListener('click', async () => {
     const current = getCurrent();
@@ -502,5 +599,5 @@ export function createImageMapping({ getCurrent, assetInputs, byId, json, downlo
       refresh();
     }
   });
-  return { reset, invalidate, refresh, exportState, validateState, restoreState, getRevision: () => revision };
+  return { reset, invalidate, refresh, cancelPending, scopeStatus, captureForReplacement, exportState, validateState, restoreState, getRevision: () => revision };
 }

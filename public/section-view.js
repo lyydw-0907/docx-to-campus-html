@@ -67,17 +67,17 @@ export function createSectionView() {
     if (mapped || mappedSections.size) revision++;
     mapped = undefined; mappedSections.clear();
   }
-  function snapshot() {
-    if (!current) return undefined;
-    const whole = selectedId === 'whole';
-    const original = originals.get(selectedId);
-    const mappedSection = mappedSections.get(selectedId)
-      ?? (whole ? mapped : mapped?.sections?.find(section => section.id === selectedId));
+  function snapshot(id = selectedId) {
+    const original = originals.get(id);
+    if (!current || !original) return undefined;
+    const whole = id === 'whole';
+    const mappedSection = mappedSections.get(id)
+      ?? (whole ? mapped : mapped?.sections?.find(section => section.id === id));
     const displayed = mappedSection ?? original;
     const hasImages = original.assetFilenames.length > 0;
     const needsMapping = hasImages && !mappedSection && current.manifest.options?.imageMode !== 'mapped';
     const eligible = original.kind === 'field' || original.kind === 'unassigned' || whole;
-    const content = contentById.get(selectedId);
+    const content = contentById.get(id);
     // Keep the local image document even when copied HTML uses school upload URLs.
     return { ...original, fragment: displayed.fragment, preview: original.preview,
       needsMapping, mapped: Boolean(mappedSection), eligible: eligible && content,

@@ -3,6 +3,8 @@ import { createJobRecovery } from '/job-recovery.js';
 import { createSectionView, sectionDisplayTitle } from '/section-view.js';
 import { startSiteVisits } from '/site-visits.js';
 import { createProgressActions } from '/progress-actions.js';
+import { createProgressGuard } from '/progress-guard.js';
+import { createConversionActions } from '/conversion-actions.js';
 
 startSiteVisits();
 
@@ -15,8 +17,13 @@ let conversionBusy = false;
 let workGeneration = 0;
 let progressKind = false;
 let progressDisabled;
+let conversionDisabled;
+let exitGuardAttached = false;
 const assetInputs = new Map();
 const sectionView = createSectionView();
+const copiedSections = new Set();
+const progressGuard = createProgressGuard({ onChange: renderProgressState });
+const beforeUnload = event => progressGuard.beforeUnload(event);
 const jobRecovery = createJobRecovery({
   getCurrent: () => current,
   onRecovering: () => status('本地记录已失效，正在用原 Word 恢复。已粘贴的学校源码和图片地址会保留…'),
@@ -34,7 +41,10 @@ const imageMapping = createImageMapping({ getCurrent: () => current, assetInputs
   getCopyState: () => {
     const selected = sectionView.snapshot();
     return selected && { ...selected, displayTitle: sectionDisplayTitle(selected) };
-  }, copySelectedSource });
+  }, copySelectedSource,
+  onScopeSelect: selectSection,
+  onChange: () => { progressGuard.changed(); copiedSections.clear(); updateSectionProgress(); },
+});
 
 const progressContext = () => ({ generation: workGeneration, current, selectedFile,
   section: sectionView.token(), mappingRevision: imageMapping.getRevision() });
@@ -46,7 +56,7 @@ const progressActions = createProgressActions({
     if (!current) throw new Error('请先转换 Word，再保存工作进度。');
     const remembered = jobRecovery.getInput();
     const params = new URLSearchParams(remembered.params);
-    return { ...remembered, context, result: current, mapping: imageMapping.exportState(),
+    return { ...remembered, context, result: current, saveStamp: progressGuard.capture(), mapping: imageMapping.exportState(),
       selectedSectionId: sectionView.snapshot().id,
       name: remembered.input.name || (params.get('documentType') === 'progress' ? 'progress-demo.docx' : 'demo.docx') };
   },
@@ -59,8 +69,36 @@ const progressActions = createProgressActions({
   validate: (snapshot, result) => imageMapping.validateState(snapshot, result),
   commit: commitProgress,
   download, status, busy: setProgressBusy,
+  onSaved: snapshot => progressGuard.saved(snapshot.saveStamp),
+  onRestored: () => { copiedSections.clear(); progressGuard.restored(); updateSectionProgress(); },
   cancelConversion: () => { const cancel = byId('cancel-conversion'); if (cancel && !cancel.hidden) cancel.click(); },
 });
+const conversionActions = createConversionActions({
+  capture: () => {
+    workGeneration++;
+    imageMapping.cancelPending();
+    return { generation: workGeneration, result: current, hasResult: Boolean(current) };
+  },
+  isCurrent: stamp => stamp.generation === workGeneration && stamp.result === current,
+  convert: async (input, params) => json(await fetch(`/api/convert?${params}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    body: input, preserveJobId: current?.jobId,
+  })),
+  commit: commitConversion, busy: setConversionBusy, status,
+  onCommitted: () => { copiedSections.clear(); progressGuard.newDocument(); updateSectionProgress(); },
+});
+
+function renderProgressState(state) {
+  const node = byId('progress-state');
+  const savedTime = state.lastSavedAt === null ? '' : new Date(state.lastSavedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  node.textContent = !state.hasDocument ? '转换后可保存工作进度。'
+    : state.dirty ? `有改动尚未保存，请在离开前保存工作进度。${savedTime ? `上次下载进度：${savedTime}。` : ''}`
+    : state.restored ? '已恢复进度；当前内容已保存在导入的进度文件中。'
+    : `工作进度已下载${savedTime ? `（${savedTime}）` : ''}。修改后请再次保存。`;
+  node.dataset.dirty = String(state.dirty);
+  if (state.dirty && !exitGuardAttached) { window.addEventListener('beforeunload', beforeUnload); exitGuardAttached = true; }
+  else if (!state.dirty && exitGuardAttached) { window.removeEventListener('beforeunload', beforeUnload); exitGuardAttached = false; }
+}
 
 function updateProgressControls() {
   byId('save-progress').disabled = !current || conversionBusy || Boolean(progressKind);
@@ -85,25 +123,62 @@ function setProgressBusy(kind) {
 }
 function setConversionBusy(value) {
   conversionBusy = value;
-  for (const id of ['convert', 'demo', 'file', 'document-type']) byId(id).disabled = value;
+  if (value && !conversionDisabled) {
+    conversionDisabled = new Map([...document.querySelectorAll('#conversion-controls input, #conversion-controls select, #conversion-controls button')]
+      .filter(node => node.id !== 'cancel-conversion').map(node => [node, node.disabled]));
+    for (const node of conversionDisabled.keys()) node.disabled = true;
+  } else if (!value && conversionDisabled) {
+    for (const [node, disabled] of conversionDisabled) node.disabled = disabled;
+    conversionDisabled = undefined;
+    byId('scale').disabled = byId('formula-format').value === 'mathml';
+  }
+  for (const id of ['workspace', 'section-controls', 'mapping']) byId(id).inert = value;
   updateProgressControls();
+}
+function captureWorkspace() {
+  return current && { result: current, input: jobRecovery.getInput(), restoreMapping: imageMapping.captureForReplacement(), sectionId: sectionView.snapshot().id };
+}
+function restoreWorkspace(previous) {
+  if (previous) {
+    showResult(previous.result); previous.restoreMapping();
+    sectionView.select(previous.sectionId); renderSelectedSection(); imageMapping.refresh();
+    jobRecovery.remember(previous.result, previous.input.input, previous.input.params);
+  } else {
+    current = undefined; sectionView.setResult(undefined); jobRecovery.clear();
+    for (const id of ['workspace', 'section-controls', 'mapping']) byId(id).hidden = true;
+    byId('source').value = ''; byId('copy').disabled = true; clearPreview();
+    assetInputs.clear(); imageMapping.reset();
+  }
+}
+function useSelectedFile(file, prefix) {
+  selectedFile = file;
+  try { const transfer = new DataTransfer(); transfer.items.add(file); byId('file').files = transfer.files; }
+  catch { byId('file').value = ''; }
+  byId('file-name').textContent = `${prefix}：${file.name}`;
+}
+function commitConversion(result, input, params) {
+  const settings = new URLSearchParams(params);
+  const file = input instanceof File ? input : new File([input], settings.get('documentType') === 'progress' ? 'progress-demo.docx' : 'demo.docx',
+    { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const previous = captureWorkspace();
+  try {
+    showResult(result); jobRecovery.remember(result, file, params);
+    useSelectedFile(file, '已转换');
+  } catch (error) { restoreWorkspace(previous); throw error; }
 }
 function commitProgress(result, candidate) {
   const file = new File([candidate.source], candidate.progress.sourceName, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   const params = new URLSearchParams(candidate.progress.params);
   const previousControls = { selectedFile, files: byId('file').files, name: byId('file-name').textContent,
     settings: ['document-type', 'formula-format', 'font-size', 'scale'].map(id => [id, byId(id).value]) };
-  const previous = current && { result: current, input: jobRecovery.getInput(), mapping: imageMapping.exportState(), sectionId: sectionView.snapshot().id };
+  const previous = captureWorkspace();
   try {
     showResult(result);
     imageMapping.restoreState(candidate.mapping);
     sectionView.select(candidate.progress.selectedSectionId);
     renderSelectedSection(); imageMapping.refresh();
     jobRecovery.remember(result, file, candidate.progress.params);
-    selectedFile = file;
-    try { const transfer = new DataTransfer(); transfer.items.add(file); byId('file').files = transfer.files; }
-    catch { byId('file').value = ''; }
-    byId('file-name').textContent = `已恢复：${file.name}`;
+    useSelectedFile(file, '已恢复');
     byId('document-type').value = params.get('documentType');
     byId('formula-format').value = params.get('formulaFormat');
     byId('font-size').value = params.get('fontMode') === 'word' ? 'word' : params.get('fontSize');
@@ -112,16 +187,7 @@ function commitProgress(result, candidate) {
     updateDocumentTypeHelp();
     workGeneration++;
   } catch (error) {
-    if (previous) {
-      showResult(previous.result); imageMapping.restoreState(previous.mapping);
-      sectionView.select(previous.sectionId); renderSelectedSection(); imageMapping.refresh();
-      jobRecovery.remember(previous.result, previous.input.input, previous.input.params);
-    } else {
-      current = undefined; sectionView.setResult(undefined); jobRecovery.clear();
-      for (const id of ['workspace', 'section-controls', 'mapping']) byId(id).hidden = true;
-      byId('source').value = ''; byId('copy').disabled = true; clearPreview();
-      assetInputs.clear(); imageMapping.reset();
-    }
+    restoreWorkspace(previous);
     selectedFile = previousControls.selectedFile;
     try { byId('file').files = previousControls.files; } catch { byId('file').value = ''; }
     byId('file-name').textContent = previousControls.name;
@@ -138,6 +204,7 @@ byId('progress-file').addEventListener('change', async () => {
 });
 byId('cancel-progress').addEventListener('click', () => progressActions.cancel());
 updateProgressControls();
+renderProgressState(progressGuard.snapshot());
 
 const demoRequestUrl = () => `/api/demo-docx?${new URLSearchParams({ documentType: byId('document-type').value })}`;
 function updateDocumentTypeHelp() {
@@ -162,6 +229,34 @@ function showMappedSource(exported) {
 function resetMappedSource() {
   sectionView.resetMapped();
   if (current) renderSelectedSection();
+}
+function selectSection(id) {
+  if (conversionBusy || progressKind === 'restore') return;
+  sectionView.select(id); renderSelectedSection(); imageMapping.refresh(); updateSectionProgress();
+}
+function updateSectionProgress() {
+  if (!current) return;
+  const items = sectionView.items();
+  for (const id of ['section-select', 'mapping-section-select']) {
+    for (const option of byId(id).options) {
+      const item = items.find(item => item.id === option.value);
+      const selected = sectionView.snapshot(option.value), readiness = imageMapping.scopeStatus(option.value);
+      if (!item || !selected || !readiness) continue;
+      const label = !selected.eligible ? '无正文' : copiedSections.has(item.id) ? '已复制'
+        : readiness.unconfirmed ? '待确认图片'
+        : readiness.missingCount ? `还缺 ${readiness.missingCount} 张图片地址`
+        : readiness.ready ? '可复制' : '待处理';
+      option.textContent = `${sectionDisplayTitle(item)}${item.kind === 'unassigned' ? '（待分配内容）' : ''} · ${label}`;
+    }
+  }
+  const fields = items.filter(item => ['field', 'unassigned'].includes(item.kind));
+  const active = sectionView.snapshot().id;
+  const next = active === 'whole' ? fields[0] : fields[fields.findIndex(item => item.id === active) + 1];
+  for (const id of ['next-section', 'mapping-next-section']) {
+    const button = byId(id); button.hidden = !fields.length; button.disabled = !next;
+    button.textContent = active === 'whole' ? '开始按栏目处理' : '下一栏目';
+    button.dataset.sectionId = next?.id || '';
+  }
 }
 function renderSelectedSection() {
   const selected = sectionView.snapshot();
@@ -192,6 +287,7 @@ function renderSelectedSection() {
     ? `对应学校“${selected.title}”栏目。学校已有的蓝色栏目标题已从此片段移除，正文里的小标题和编号保留。`
     : note;
   byId('section-note').className = selected.empty ? 'error' : '';
+  updateSectionProgress();
 }
 
 function status(message, error = false) { byId('status').textContent = message; byId('status').className = error ? 'error' : ''; }
@@ -262,30 +358,13 @@ function showResult(result) {
     ? `转换完成。${nativeMath ? '原生公式无需图片上传。' : ''}在下方下载上传用图片，上传后一次粘贴学校源码即可识别地址。当前文档仍需保存回读检查。`
     : '转换完成。可复制 HTML 到学校编辑器的源码模式；当前文档尚未完成学校保存回读检查。');
 }
-async function convert(input, reserved = false) {
-  if (conversionBusy && !reserved || progressActions.isBusy()) return status('正在处理文件，请等待完成或先取消。', true);
-  workGeneration++;
-  setConversionBusy(true);
-  jobRecovery.clear();
-  current = undefined;
-  sectionView.setResult(undefined);
-  byId('workspace').hidden = true;
-  byId('section-controls').hidden = true;
-  byId('mapping').hidden = true;
-  byId('source').value = '';
-  byId('copy').disabled = true;
-  clearPreview();
-  assetInputs.clear();
-  imageMapping.reset();
-  status('正在转换正文和公式…');
-  try {
-    const sizeChoice = byId('font-size').value;
-    const params = new URLSearchParams({ documentType: byId('document-type').value, fontMode: sizeChoice === 'word' ? 'word' : 'uniform', fontSize: sizeChoice === 'word' ? '14' : sizeChoice, scale: byId('scale').value, formulaFormat: byId('formula-format').value });
-    const result = await json(await fetch(`/api/convert?${params}`, { method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, body: input }));
-    showResult(result);
-    jobRecovery.remember(result, input, params);
-  } catch (error) { status(error.message, true); }
-  finally { setConversionBusy(false); }
+function conversionParams() {
+  const sizeChoice = byId('font-size').value;
+  return new URLSearchParams({ documentType: byId('document-type').value, fontMode: sizeChoice === 'word' ? 'word' : 'uniform', fontSize: sizeChoice === 'word' ? '14' : sizeChoice, scale: byId('scale').value, formulaFormat: byId('formula-format').value }).toString();
+}
+function convert(input) {
+  if (conversionBusy || progressActions.isBusy()) return status('正在处理文件，请等待完成或先取消。', true);
+  return conversionActions.run({ input, params: conversionParams() });
 }
 function selectFiles(files) {
   if (conversionBusy || progressActions.isBusy()) return status('正在处理文件，请等待完成或先取消，再选择新文件。', true);
@@ -331,47 +410,54 @@ byId('convert').addEventListener('click', () => {
 });
 byId('demo').addEventListener('click', async () => {
   if (conversionBusy || progressActions.isBusy()) return;
-  setConversionBusy(true);
-  try { const response = await fetch(demoRequestUrl()); if (!response.ok) throw new Error('示例读取失败。'); await convert(await response.blob(), true); }
-  catch (error) { status(error.message, true); }
-  finally { setConversionBusy(false); }
+  const params = conversionParams(), url = demoRequestUrl();
+  await conversionActions.run({ params, loadInput: async () => {
+    const response = await fetch(url); if (!response.ok) throw new Error('示例读取失败。'); return response.blob();
+  } });
 });
 async function copySelectedSource() {
   if (!current || !sectionView.snapshot()?.copyable) return;
-  const token = sectionView.token(); const selected = sectionView.snapshot();
+  const token = sectionView.token(); const selected = sectionView.snapshot(); const generation = workGeneration;
   try {
     await navigator.clipboard.writeText(selected.fragment);
-    if (sectionView.matches(token)) status(selected.kind === 'whole'
+    if (sectionView.matches(token) && generation === workGeneration) {
+      copiedSections.add(selected.id); updateSectionProgress();
+      status(selected.kind === 'whole'
       ? `已复制整篇 HTML。${current.sections?.length ? '包含封面和所有栏目；学校分栏目填写时，可选择对应栏目分别复制。' : '可粘贴到目标编辑器的源码模式，并检查保存后的效果。'}`
       : selected.kind === 'unassigned'
       ? `已复制“${selected.title}”正文。粘贴位置请自行选择，并检查保存后的效果。`
       : `已复制${selected.kind === 'field' ? `“${selected.title}”` : ''}正文。请粘贴到对应编辑框的源码模式，并检查保存后的效果。`);
+    }
   } catch {
-    if (!sectionView.matches(token)) return;
+    if (!sectionView.matches(token) || generation !== workGeneration) return;
     byId('source').focus(); byId('source').select(); status(`浏览器未允许自动复制，已选中${selected.kind === 'whole' ? '整篇 HTML' : selected.kind === 'unassigned' ? `“${selected.title}”源码` : '当前栏目源码'}，请按 Ctrl+C。`);
   }
 }
 byId('copy').addEventListener('click', copySelectedSource);
 for (const id of ['section-select', 'mapping-section-select']) byId(id).addEventListener('change', () => {
-  sectionView.select(byId(id).value); renderSelectedSection(); imageMapping.refresh();
+  selectSection(byId(id).value);
+});
+for (const id of ['next-section', 'mapping-next-section']) byId(id).addEventListener('click', () => {
+  const target = byId(id).dataset.sectionId; if (target) selectSection(target);
 });
 async function exportZip(mode) {
   if (!current || mode === 'mapped' && byId('download-mapped').disabled) return;
   const result = current;
+  const generation = workGeneration;
   const mappingRevision = imageMapping.getRevision();
   const urls = Object.fromEntries([...assetInputs].map(([name, input]) => [name, input.value.trim()]));
   try {
     const response = await requestJob('export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, urls }) });
-    if (current !== result || mode === 'mapped' && imageMapping.getRevision() !== mappingRevision) return;
+    if (current !== result || generation !== workGeneration || mode === 'mapped' && imageMapping.getRevision() !== mappingRevision) return;
     if (!response.ok) throw new Error((await response.json()).error);
     const archive = await response.blob();
-    if (current !== result || mode === 'mapped' && imageMapping.getRevision() !== mappingRevision) return;
+    if (current !== result || generation !== workGeneration || mode === 'mapped' && imageMapping.getRevision() !== mappingRevision) return;
     if (mode === 'mapped' && Object.entries(urls).some(([name, url]) => assetInputs.get(name)?.value.trim() !== url)) throw new Error('图片地址已修改，请重新下载映射后的 HTML。');
     download(archive, mode === 'mapped' ? 'campus-mapped-html.zip' : result.assets.length ? 'campus-local-preview.zip' : result.manifest.options?.formulaFormat === 'mathml' ? 'campus-mathml-html.zip' : 'campus-html.zip');
     status(mode === 'mapped'
       ? `已导出替换图片地址的 HTML，${current.manifest.options?.formulaFormat === 'mathml' ? '原生公式和' : ''}图片宽高保留。当前文档仍需学校保存回读检查。`
       : current.assets.length ? '已导出图片与本地预览。上传后在下方粘贴一次学校源码识别地址，再下载替换后的 HTML。' : current.sections?.length ? '已导出各栏目 HTML 与预览。将 sections 文件夹中对应栏目的正文分别粘贴到学校编辑框，并检查保存后的效果。' : '已导出 HTML 与预览。可将 fragment.html 复制到学校源码模式；当前文档仍需保存回读检查。');
-  } catch (error) { if (current === result && (mode !== 'mapped' || imageMapping.getRevision() === mappingRevision)) status(error.message, true); }
+  } catch (error) { if (current === result && generation === workGeneration && (mode !== 'mapped' || imageMapping.getRevision() === mappingRevision)) status(error.message, true); }
 }
 byId('download').addEventListener('click', () => exportZip('embedded'));
 byId('download-mapped').addEventListener('click', () => exportZip('mapped'));

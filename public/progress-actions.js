@@ -2,7 +2,7 @@ import { createWorkProgress, readWorkProgress, validateRestoredProgress } from '
 
 /** Transactional user-downloaded progress. Candidate work never clears the page. */
 export function createProgressActions({ capture, isCurrent, convert, validate, commit,
-  download, status, busy, cancelConversion }) {
+  download, status, busy, cancelConversion, onSaved, onRestored }) {
   let pending;
   let generation = 0;
 
@@ -27,6 +27,10 @@ export function createProgressActions({ capture, isCurrent, convert, validate, c
       status('工作内容已变化，这次操作已停止。请重新保存或恢复进度。', true);
     }
   }
+  function observe(callback, ...args) {
+    // Download/commit success is independent of optional UI observers.
+    try { Promise.resolve(callback?.(...args)).catch(() => {}); } catch {}
+  }
   async function save() {
     let operation;
     try {
@@ -36,7 +40,9 @@ export function createProgressActions({ capture, isCurrent, convert, validate, c
       const archive = await createWorkProgress(operation.snapshot);
       if (!active(operation)) { changed(operation); return false; }
       const stem = operation.snapshot.name.replace(/\.docx$/i, '');
-      download(new Blob([archive], { type: 'application/zip' }), `${stem}-工作进度.zip`);
+      await download(new Blob([archive], { type: 'application/zip' }), `${stem}-工作进度.zip`);
+      if (!active(operation)) { changed(operation); return false; }
+      observe(onSaved, operation.snapshot);
       status('工作进度已下载。下次选择这个进度文件即可恢复，无需解压或重新选择 Word。');
       return true;
     } catch (error) {
@@ -61,6 +67,7 @@ export function createProgressActions({ capture, isCurrent, convert, validate, c
       if (!active(operation)) { changed(operation); return false; }
       // The commit callback is synchronous: all decoding and validation finish first.
       commit(result, { ...candidate, mapping });
+      observe(onRestored);
       status('工作进度已恢复。已确认的图片可以继续复制，待确认的对应关系仍需核对。');
       return true;
     } catch (error) {
