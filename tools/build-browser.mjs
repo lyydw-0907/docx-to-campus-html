@@ -17,7 +17,7 @@ const replaceOnce = (text, from, to, name) => {
 const browserUi = {
   name: 'campus-browser-ui',
   setup(builder) {
-    builder.onResolve({ filter: /^\/(?:image-mapping|job-recovery|section-view|image-order|site-visits|progress-actions|progress-guard|conversion-actions)\.js$/ }, args => ({ path: path.join(root, 'public', args.path.slice(1)) }));
+    builder.onResolve({ filter: /^\/(?:image-mapping|job-recovery|section-view|image-order|site-visits|progress-actions|progress-guard|conversion-actions|formula-inspection)\.js$/ }, args => ({ path: path.join(root, 'public', args.path.slice(1)) }));
     builder.onResolve({ filter: /^cheerio$/ }, () => ({ path: path.join(root, 'browser', 'html.js') }));
     builder.onLoad({ filter: /[\\/]public[\\/](?:app|image-mapping)\.js$/ }, async args => {
       let text = (await readFile(args.path, 'utf8')).replaceAll('\r\n', '\n');

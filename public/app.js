@@ -5,6 +5,7 @@ import { startSiteVisits } from '/site-visits.js';
 import { createProgressActions } from '/progress-actions.js';
 import { createProgressGuard } from '/progress-guard.js';
 import { createConversionActions } from '/conversion-actions.js';
+import { collectFormulaWarnings, createFormulaInspection } from '/formula-inspection.js';
 
 startSiteVisits();
 
@@ -12,6 +13,8 @@ const byId = id => document.getElementById(id);
 let current;
 let previewUrl;
 let previewHtml;
+let formulaInspection;
+let formulaInspectionUrl;
 let selectedFile;
 let conversionBusy = false;
 let workGeneration = 0;
@@ -164,6 +167,7 @@ function commitConversion(result, input, params) {
   try {
     showResult(result); jobRecovery.remember(result, file, params);
     useSelectedFile(file, '已转换');
+    clearFormulaInspection();
   } catch (error) { restoreWorkspace(previous); throw error; }
 }
 function commitProgress(result, candidate) {
@@ -186,6 +190,7 @@ function commitProgress(result, candidate) {
     byId('scale').disabled = params.get('formulaFormat') === 'mathml';
     updateDocumentTypeHelp();
     workGeneration++;
+    clearFormulaInspection();
   } catch (error) {
     restoreWorkspace(previous);
     selectedFile = previousControls.selectedFile;
@@ -288,6 +293,7 @@ function renderSelectedSection() {
     : note;
   byId('section-note').className = selected.empty ? 'error' : '';
   updateSectionProgress();
+  updateFormulaInspectionNote();
 }
 
 function status(message, error = false) { byId('status').textContent = message; byId('status').className = error ? 'error' : ''; }
@@ -319,6 +325,60 @@ function showPreview(html) {
   byId('preview').src = previewUrl;
   if (previousUrl) setTimeout(() => URL.revokeObjectURL(previousUrl), 1000);
 }
+function clearFormulaInspection(restoreFocus = false) {
+  const opener = formulaInspection?.opener;
+  byId('formula-inspection-preview').removeAttribute('src');
+  if (formulaInspectionUrl) URL.revokeObjectURL(formulaInspectionUrl);
+  formulaInspectionUrl = undefined; formulaInspection = undefined;
+  byId('formula-inspection').hidden = true;
+  byId('formula-inspection-tex').textContent = '';
+  byId('formula-inspection-note').textContent = '';
+  if (restoreFocus) (opener?.isConnected ? opener : byId('copy')).focus();
+}
+function updateFormulaInspectionNote() {
+  if (!formulaInspection || formulaInspection.result !== current) return;
+  const { detail } = formulaInspection;
+  const scope = sectionView.snapshot();
+  const title = scope ? sectionDisplayTitle(scope) : '当前正文';
+  byId('formula-inspection-note').textContent = `正在查看整篇第 ${detail.index} 个公式。复制范围仍为“${title}”。${detail.reason || ''}`;
+}
+function openFormulaInspection(result, index, opener) {
+  if (current !== result || conversionBusy || progressKind === 'restore') return;
+  try {
+    const detail = createFormulaInspection(result, index);
+    const nextUrl = detail.available && detail.preview
+      ? URL.createObjectURL(new Blob([detail.preview], { type: 'text/html;charset=utf-8' })) : undefined;
+    clearFormulaInspection();
+    formulaInspection = { result, detail, opener }; formulaInspectionUrl = nextUrl;
+    byId('formula-inspection-title').textContent = `第 ${detail.index} 个公式（整篇序号）`;
+    byId('formula-inspection-tex').textContent = detail.tex;
+    const frame = byId('formula-inspection-preview'); frame.hidden = !nextUrl;
+    if (nextUrl) frame.src = `${nextUrl}#${encodeURIComponent(detail.anchor)}`;
+    updateFormulaInspectionNote();
+    byId('formula-inspection').hidden = false;
+    const heading = byId('formula-inspection-title'); heading.tabIndex = -1;
+    byId('formula-inspection').scrollIntoView({ block: 'start' });
+    heading.focus({ preventScroll: true });
+  } catch (error) { status(`公式查看未完成：${error.message}`, true); }
+}
+function renderFormulaWarnings(result) {
+  const { actionable, general } = collectFormulaWarnings(result);
+  byId('warnings').replaceChildren();
+  for (const warning of general) { const li = document.createElement('li'); li.textContent = warning; byId('warnings').append(li); }
+  const list = byId('formula-warning-list'); list.replaceChildren();
+  for (const warning of actionable) {
+    const li = document.createElement('li');
+    const text = document.createElement('span'); text.textContent = warning.message;
+    const button = document.createElement('button'); button.className = 'small';
+    button.textContent = `查看第 ${warning.index} 个公式`; button.dataset.formulaIndex = String(warning.index);
+    button.addEventListener('click', () => openFormulaInspection(result, warning.index, button));
+    li.append(text, button); list.append(li);
+  }
+  byId('formula-warning-panel').hidden = actionable.length === 0;
+  byId('formula-warning-summary').textContent = actionable.length
+    ? `有 ${actionable.length} 项公式提示，涉及 ${new Set(actionable.map(item => item.index)).size} 个公式。点击可查看公式和附近正文。` : '';
+}
+byId('close-formula-inspection').addEventListener('click', () => clearFormulaInspection(true));
 function showResult(result) {
   current = result;
   sectionView.setResult(result);
@@ -340,8 +400,7 @@ function showResult(result) {
   const nativeMath = result.manifest.options?.formulaFormat === 'mathml';
   byId('download').textContent = hasEmbeddedImages ? '下载图片与本地预览' : result.sections?.length ? '下载各栏目 HTML 与预览' : '下载 HTML 与预览';
   byId('export-note').textContent = result.sections?.length ? '包含各栏目正文、整篇核对版和转换清单' : hasEmbeddedImages ? '提取图片并上传，替换地址后使用' : '包含可复制的源码、预览和转换清单';
-  byId('warnings').replaceChildren();
-  for (const warning of result.manifest.warnings || []) { const li = document.createElement('li'); li.textContent = warning; byId('warnings').append(li); }
+  renderFormulaWarnings(result);
   assetInputs.clear(); byId('asset-list').replaceChildren();
   for (const [index, asset] of result.assets.entries()) {
     const row = document.createElement('div'); row.className = 'asset-row';
@@ -430,6 +489,7 @@ async function copySelectedSource() {
     }
   } catch {
     if (!sectionView.matches(token) || generation !== workGeneration) return;
+    byId('source-details').open = true;
     byId('source').focus(); byId('source').select(); status(`浏览器未允许自动复制，已选中${selected.kind === 'whole' ? '整篇 HTML' : selected.kind === 'unassigned' ? `“${selected.title}”源码` : '当前栏目源码'}，请按 Ctrl+C。`);
   }
 }

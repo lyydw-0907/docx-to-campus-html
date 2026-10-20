@@ -18,6 +18,7 @@ test('native HTTP serves progress and visit modules as executable JavaScript wit
   for (const [filename, exported] of [
     ['progress-actions.js', 'createProgressActions'], ['work-progress.js', 'createWorkProgress'], ['site-visits.js', 'startSiteVisits'],
     ['progress-guard.js', 'createProgressGuard'], ['conversion-actions.js', 'createConversionActions'],
+    ['formula-inspection.js', 'collectFormulaWarnings'],
   ]) {
     const response = await fetch(`${origin}/${filename}`);
     assert.equal(response.status, 200, `${filename} must load in the native page`);

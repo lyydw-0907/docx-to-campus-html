@@ -28,8 +28,26 @@
     <p id="section-note" role="status" aria-live="polite"></p>
   </section>
   <section id="workspace" class="workspace" hidden>
-    <div class="panel preview-panel"><div class="panel-top"><h2>内容预览</h2><span id="counts"></span></div><iframe id="preview" title="转换结果预览" sandbox=""></iframe></div>
-    <div class="panel source-panel"><div class="panel-top"><h2>HTML 源码</h2><button id="copy" class="small" disabled>复制片段</button></div><p id="source-note">含嵌入图片的源码须上传图片并替换地址后使用。</p><textarea id="source" readonly spellcheck="false" aria-label="HTML 源码"></textarea><div class="export-bar"><button id="download" class="primary">下载 HTML 与预览</button><span id="export-note">包含源码、预览和转换清单</span></div><details><summary>转换提示</summary><ul id="warnings"></ul></details></div>
+    <div class="panel preview-panel">
+      <div class="panel-top"><h2>内容预览</h2><div class="preview-actions"><span id="counts"></span><button id="copy" class="small" disabled>复制片段</button></div></div>
+      <iframe id="preview" title="转换结果预览" sandbox=""></iframe>
+    </div>
+    <section id="formula-warning-panel" class="panel formula-warning-panel" aria-labelledby="formula-warning-summary" hidden>
+      <div class="panel-top"><h2 id="formula-warning-summary">公式编号提示</h2></div>
+      <ul id="formula-warning-list"></ul>
+    </section>
+    <section id="formula-inspection" class="panel formula-inspection" aria-labelledby="formula-inspection-title" aria-describedby="formula-inspection-note" hidden>
+      <div class="panel-top"><h2 id="formula-inspection-title" tabindex="-1">检查公式</h2><button id="close-formula-inspection" class="small">关闭公式检查</button></div>
+      <p id="formula-inspection-note" role="status"></p>
+      <iframe id="formula-inspection-preview" title="公式位置与上下文" sandbox=""></iframe>
+      <div class="formula-inspection-text"><h3>公式内容（TeX）</h3><pre id="formula-inspection-tex" tabindex="0" aria-label="公式 TeX"></pre></div>
+    </section>
+    <div class="panel source-panel">
+      <p id="source-note">含嵌入图片的源码须上传图片并替换地址后使用。</p>
+      <div class="export-bar"><button id="download" class="primary">下载 HTML 与预览</button><span id="export-note">包含源码、预览和转换清单</span></div>
+      <details id="source-details" class="source-details"><summary>查看 HTML 源码</summary><textarea id="source" readonly spellcheck="false" aria-label="HTML 源码"></textarea></details>
+      <details class="conversion-warnings"><summary>转换提示</summary><ul id="warnings"></ul></details>
+    </div>
   </section>
   <section id="mapping" class="panel mapping" hidden>
     <div class="panel-top"><h2>把学校上传的图片带回正文</h2><span id="mapping-count">尚未填写图片地址</span></div>
@@ -58,7 +76,7 @@
     <div class="mapping-copy-control"><label id="mapping-section-control">复制范围<select id="mapping-section-select" aria-describedby="mapping-copy-note"></select></label><button id="mapping-next-section" class="small" hidden>下一栏目</button><p id="mapping-copy-note" role="status" aria-live="polite"></p></div>
     <div class="mapped-actions"><button id="copy-mapped" class="primary" disabled>复制到学校编辑器</button><button id="download-mapped" title="完整文档下载需要填写并确认整篇图片地址" disabled>下载整篇已替换图片地址的 HTML</button></div>
   </section>
-  <section class="panel compatibility"><div class="panel-top"><h2>检查保存并重新打开后的效果</h2><button id="probe">生成测试片段</button></div><p>在可删除的测试草稿中粘贴测试片段，保存后离开页面，再重新打开。将两份 HTML 源码放到下面比较，并检查页面图片、字号和对齐。</p><div class="compare-inputs"><label>保存前的 HTML<textarea id="before" spellcheck="false" placeholder="生成测试片段，或粘贴保存前的源码"></textarea></label><label>重新打开后的 HTML<textarea id="after" spellcheck="false" placeholder="从学校编辑器的源码模式复制"></textarea></label></div><button id="compare">比较两份源码</button><div id="comparison" aria-live="polite"></div></section>
+  <section class="panel compatibility"><details id="compatibility-details" class="compatibility-details"><summary>检查保存并重新打开后的效果</summary><div class="compatibility-tools"><button id="probe">生成测试片段</button></div><p>在可删除的测试草稿中粘贴测试片段，保存后离开页面，再重新打开。将两份 HTML 源码放到下面比较，并检查页面图片、字号和对齐。</p><div class="compare-inputs"><label>保存前的 HTML<textarea id="before" spellcheck="false" placeholder="生成测试片段，或粘贴保存前的源码"></textarea></label><label>重新打开后的 HTML<textarea id="after" spellcheck="false" placeholder="从学校编辑器的源码模式复制"></textarea></label></div><button id="compare">比较两份源码</button><div id="comparison" aria-live="polite"></div></details></section>
   <p id="site-visits" class="site-visits" hidden aria-live="polite"></p>
   <footer>原生公式的合成样例已通过学校暂存回读；其他公式和正式提交效果未验证。此工具不会登录学校系统或提交申报材料。<a href="/api/demo-docx" download="demo.docx">下载申报书示例 Word</a> · <a href="/api/demo-docx?documentType=progress" download="progress-demo.docx">下载进展检查示例 Word</a></footer>
 </main><script type="module" src="/app.js"></script>
